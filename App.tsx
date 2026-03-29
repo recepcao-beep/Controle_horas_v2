@@ -577,7 +577,7 @@ const App: React.FC = () => {
     let totalPayment = 0;
 
     if (targetFlowType === EmployeeType.REGISTRADO && employee) {
-      const hourlyBase = (employee.salary / employee.monthlyHours);
+      const hourlyBase = (parseCurrency(employee.salary) / (parseFloat(String(employee.monthlyHours)) || 1));
       const overtimeRate = hourlyBase * 1.25;
       
       modalRecords.forEach(r => {
@@ -611,7 +611,7 @@ const App: React.FC = () => {
       });
       totalPayment = totalDiffHours * overtimeRate;
     } else {
-      const hourlyRate = sector?.fixedRate || 0;
+      const hourlyRate = parseCurrency(sector?.fixedRate);
       modalRecords.forEach(r => { 
         if (r.realEntry && r.realExit) {
           const start = timeToDecimal(r.realEntry);
@@ -1962,7 +1962,7 @@ function testeManual() {
                 
                 {/* Desktop View */}
                 <div className="hidden md:block">
-                    <table className="w-full text-left"><thead><tr className="border-b dark:border-gray-700 text-xs text-gray-400 dark:text-gray-500"><th className="py-4">Nome</th><th className="py-4">Setor</th><th className="py-4">Valor Hora (+25%)</th><th className="py-4 text-right">Ação</th></tr></thead><tbody>{employees.map(e => (<tr key={e.id} className="border-b dark:border-gray-700"><td className="py-4 dark:text-gray-200">{e.name}</td><td className="py-4 dark:text-gray-300">{sectors.find(s => s.id === e.sectorId)?.name}</td><td className="py-4 dark:text-gray-300">{formatCurrency((e.salary / (e.monthlyHours || 1)) * 1.25)}</td><td className="py-4 text-right flex justify-end gap-2"><button onClick={() => { setEditingEmployeeId(e.id); setNewEmpData({ name: e.name, sectorId: e.sectorId, salary: e.salary, monthlyHours: e.monthlyHours, type: e.type }); }} className="text-blue-500 hover:text-blue-400"><Edit2 className="w-4 h-4" /></button><button onClick={() => setEmployees(employees.filter(emp => emp.id !== e.id))} className="text-red-400 hover:text-red-300"><XCircle className="w-4 h-4" /></button></td></tr>))}</tbody></table>
+                    <table className="w-full text-left"><thead><tr className="border-b dark:border-gray-700 text-xs text-gray-400 dark:text-gray-500"><th className="py-4">Nome</th><th className="py-4">Setor</th><th className="py-4">Valor Hora (+25%)</th><th className="py-4 text-right">Ação</th></tr></thead><tbody>{employees.map(e => (<tr key={e.id} className="border-b dark:border-gray-700"><td className="py-4 dark:text-gray-200">{e.name}</td><td className="py-4 dark:text-gray-300">{sectors.find(s => s.id === e.sectorId)?.name}</td><td className="py-4 dark:text-gray-300">{formatCurrency((parseCurrency(e.salary) / (parseFloat(String(e.monthlyHours)) || 1)) * 1.25)}</td><td className="py-4 text-right flex justify-end gap-2"><button onClick={() => { setEditingEmployeeId(e.id); setNewEmpData({ name: e.name, sectorId: e.sectorId, salary: e.salary, monthlyHours: e.monthlyHours, type: e.type }); }} className="text-blue-500 hover:text-blue-400"><Edit2 className="w-4 h-4" /></button><button onClick={() => setEmployees(employees.filter(emp => emp.id !== e.id))} className="text-red-400 hover:text-red-300"><XCircle className="w-4 h-4" /></button></td></tr>))}</tbody></table>
                 </div>
 
                 {/* Mobile View */}
@@ -1982,7 +1982,7 @@ function testeManual() {
                             <div className="flex items-center gap-2 mt-1">
                                 <span className="text-sm text-gray-600 dark:text-gray-300 bg-white dark:bg-gray-800 px-2 py-1 rounded border dark:border-gray-700">R$ {e.salary}</span>
                                 <span className="text-sm text-gray-600 dark:text-gray-300 bg-white dark:bg-gray-800 px-2 py-1 rounded border dark:border-gray-700">{e.monthlyHours}h</span>
-                                <span className="text-sm font-bold text-green-600 dark:text-green-400 ml-auto">{formatCurrency((e.salary / (e.monthlyHours || 1)) * 1.25)}/h</span>
+                                <span className="text-sm font-bold text-green-600 dark:text-green-400 ml-auto">{formatCurrency((parseCurrency(e.salary) / (parseFloat(String(e.monthlyHours)) || 1)) * 1.25)}/h</span>
                             </div>
                         </div>
                     ))}

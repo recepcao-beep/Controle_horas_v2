@@ -1,7 +1,7 @@
 
 export const parseCurrency = (value: any): number => {
   if (value === undefined || value === null) return 0;
-  if (typeof value === 'number') return isNaN(value) ? 0 : value;
+  if (typeof value === 'number') return (isNaN(value) || !isFinite(value)) ? 0 : value;
   if (typeof value === 'string') {
     let cleanStr = value.replace(/[^\d.,-]/g, '');
     
@@ -26,10 +26,10 @@ export const parseCurrency = (value: any): number => {
 };
 
 export const formatCurrency = (value: any) => {
-  if (value === undefined || value === null || value === '') return 'N/A';
+  if (value === undefined || value === null || value === '' || isNaN(value)) return 'N/A';
   const num = parseCurrency(value);
   
-  if (num === 0) {
+  if (num === 0 || !isFinite(num)) {
     const strVal = String(value).trim().replace(/[R$\s]/g, '');
     if (strVal !== '0' && strVal !== '0,00' && strVal !== '0.00' && strVal !== '') {
       return 'N/A';
@@ -39,13 +39,17 @@ export const formatCurrency = (value: any) => {
   return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(num);
 };
 
-export const timeToDecimal = (time: string): number => {
-  if (!time) return 0;
-  const [hours, minutes] = time.split(':').map(Number);
+export const timeToDecimal = (time: any): number => {
+  if (!time || typeof time !== 'string' || !time.includes(':')) return 0;
+  const parts = time.split(':');
+  const hours = parseInt(parts[0], 10);
+  const minutes = parseInt(parts[1], 10);
+  if (isNaN(hours) || isNaN(minutes)) return 0;
   return hours + minutes / 60;
 };
 
 export const formatDecimalHours = (decimal: number): string => {
+  if (isNaN(decimal) || !isFinite(decimal)) return '0h 00m';
   const hours = Math.floor(decimal);
   const minutes = Math.round((decimal - hours) * 60);
   return `${hours}h ${minutes.toString().padStart(2, '0')}m`;
