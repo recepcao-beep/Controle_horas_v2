@@ -61,13 +61,16 @@ app.get('/api/sheets/load', async (req, res) => {
       includeGridData: false,
     });
 
-    const sheetNames = response.data.sheets?.map(s => s.properties?.title) || [];
+    const sheetNames = response.data.sheets?.map(s => s.properties?.title || '') || [];
     console.log(`[API] Found sheets:`, sheetNames);
     
     const ranges = ['Setores!A:Z', 'Funcionarios!A:Z', 'Solicitacoes!A:Z'];
     
-    // Filter ranges to only those that exist
-    const existingRanges = ranges.filter(r => sheetNames.includes(r.split('!')[0]));
+    // Filter ranges to only those that exist (case-insensitive and trimming spaces)
+    const existingRanges = ranges.filter(r => {
+      const targetName = r.split('!')[0].toLowerCase().trim();
+      return sheetNames.some(sn => sn.toLowerCase().trim() === targetName);
+    });
     console.log(`[API] Fetching ranges:`, existingRanges);
 
     if (existingRanges.length === 0) {
@@ -84,7 +87,11 @@ app.get('/api/sheets/load', async (req, res) => {
     console.log(`[API] Received data for ${valueRanges.length} ranges.`);
     
     const parseSheet = (title: string) => {
-      const vr = valueRanges.find(v => v.range?.includes(title));
+      const targetTitle = title.toLowerCase().trim();
+      const vr = valueRanges.find(v => {
+        const rangeName = (v.range || '').split('!')[0].replace(/['"]/g, '').toLowerCase().trim();
+        return rangeName.includes(targetTitle);
+      });
       if (!vr || !vr.values || vr.values.length <= 1) {
         console.log(`[API] Sheet ${title} is empty or not found.`);
         return [];
