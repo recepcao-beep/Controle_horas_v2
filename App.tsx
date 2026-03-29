@@ -270,6 +270,7 @@ const App: React.FC = () => {
         setAlertMessage(error.message);
       } else {
         console.error("Erro ao carregar dados:", error);
+        setAlertMessage("Erro ao comunicar com o servidor. Verifique os logs para mais detalhes.");
       }
       
       // Fallback para localStorage
