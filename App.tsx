@@ -219,7 +219,10 @@ const App: React.FC = () => {
 
   const loadDatabase = useCallback(async (urlToUse?: string) => {
     const targetUrl = urlToUse || dbUrl;
-    if (!targetUrl) return;
+    if (!targetUrl) {
+      setIsInitialLoad(false);
+      return;
+    }
 
     setIsSyncing(true);
     try {
