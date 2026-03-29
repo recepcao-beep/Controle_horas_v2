@@ -1,0 +1,2088 @@
+1:
+2:import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+3:import { 
+4:  Settings, 
+5:  Play, 
+6:  ArrowLeft, 
+7:  LayoutDashboard, 
+8:  Users, 
+9:  MapPin, 
+10:  ClipboardList, 
+11:  CheckCircle, 
+12:  XCircle, 
+13:  LogOut, 
+14:  ChevronRight, 
+15:  ChevronDown,
+16:  ChevronUp,
+17:  Edit2, 
+18:  Database, 
+19:  RefreshCw, 
+20:  Share2, 
+21:  Lock, 
+22:  Copy,
+23:  Clock,
+24:  AlertCircle,
+25:  TrendingUp,
+26:  DollarSign,
+27:  Calendar,
+28:  Menu,
+29:  Moon,
+30:  Sun,
+31:  Folder,
+32:  FileText
+33:} from 'lucide-react';
+34:import { 
+35:  BarChart, 
+36:  Bar, 
+37:  XAxis, 
+38:  YAxis, 
+39:  Tooltip, 
+40:  ResponsiveContainer,
+41:  PieChart, 
+42:  Pie, 
+43:  Cell,
+44:  Legend,
+45:  CartesianGrid
+46:} from 'recharts';
+47:import { 
+48:  EmployeeType, 
+49:  RequestStatus, 
+50:  Sector, 
+51:  Employee, 
+52:  TimeRequest, 
+53:  AppState,
+54:  TimeRecord 
+55:} from './types';
+56:import { 
+57:  formatCurrency, 
+58:  timeToDecimal,
+59:  formatDecimalHours,
+60:  getWeekDays 
+61:} from './utils';
+62:
+63:// Constantes
+64:const STORAGE_KEY = 'controle_horas_db_v3';
+65:const DEFAULT_SHEET_URL = 'https://script.google.com/macros/s/AKfycbxIw0GfO29tiYjsIGWTgit9HyNJD0dlZ9KQ3JqK7d5YTUS0csqOeYyDGT_Z7OTAgaV-/exec';
+66:const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899'];
+67:
+68:const App: React.FC = () => {
+69:  // --- Estados do Banco de Dados ---
+70:  const [sectors, setSectors] = useState<Sector[]>([]);
+71:  const [employees, setEmployees] = useState<Employee[]>([]);
+72:  const [requests, setRequests] = useState<TimeRequest[]>([]);
+73:  const [dbUrl, setDbUrl] = useState(DEFAULT_SHEET_URL);
+74:  const [folderRegId, setFolderRegId] = useState('1OGOxVmi2nEwI47HP9l48VdVBKQeJTVqm');
+75:  const [folderFixoId, setFolderFixoId] = useState('1RzzDCHznw97QxwDLh_qvf8NE8yKPNdWU');
+76:  
+77:  const extractFolderId = (input: string) => {
+78:    if (!input) return '';
+79:    const match = input.match(/[-\w]{25,}/);
+80:    return match ? match[0] : input;
+81:  };
+82:  const [isInitialLoad, setIsInitialLoad] = useState(true);
+83:  const [isSyncing, setIsSyncing] = useState(false);
+84:  const [driveFiles, setDriveFiles] = useState<{folders: any[], files: any[]}>({folders: [], files: []});
+85:  const [currentFolderId, setCurrentFolderId] = useState<string | null>(null);
+86:  const [folderHistory, setFolderHistory] = useState<{id: string, name: string}[]>([]);
+87:  const [isLoadingFiles, setIsLoadingFiles] = useState(false);
+88:  const [alertMessage, setAlertMessage] = useState<string | null>(null);
+89:  const [confirmDialog, setConfirmDialog] = useState<{ message: string, onConfirm: () => void } | null>(null);
+90:  const hasLoadedRef = useRef(false);
+91:
+92:  // --- Estado Global da Navegação ---
+93:  const [state, setState] = useState<AppState>({
+94:    view: 'HOME',
+95:    flowType: null,
+96:    adminSubView: 'DASHBOARD'
+97:  });
+98:
+99:  // --- Estados de Formulários ---
+100:  const [adminPassword, setAdminPassword] = useState('');
+101:  const [isAuth, setIsAuth] = useState(false);
+102:  const [selectedSector, setSelectedSector] = useState<string>('');
+103:  const [selectedEmployee, setSelectedEmployee] = useState<string>('');
+104:  const [showFormModal, setShowFormModal] = useState(false);
+105:  const [currentWeek, setCurrentWeek] = useState(new Date().toISOString().split('T')[0]);
+106:
+107:  // Estados Admin
+108:  const [newSec, setNewSec] = useState({ name: '', fixedRate: 0 });
+109:  const [newEmpData, setNewEmpData] = useState({ name: '', sectorId: '', salary: 0, monthlyHours: 220, type: EmployeeType.REGISTRADO });
+110:  // Estado para controlar qual funcionário está sendo editado
+111:  const [editingEmployeeId, setEditingEmployeeId] = useState<string | null>(null);
+112:  
+113:  const [modalRecords, setModalRecords] = useState<TimeRecord[]>([]);
+114:
+115:  // Edição e Controle de Acesso
+116:  const [editingRequestId, setEditingRequestId] = useState<string | null>(null);
+117:  const [editJustification, setEditJustification] = useState('');
+118:  
+119:  const [isDarkMode, setIsDarkMode] = useState(() => {
+120:    const saved = localStorage.getItem('theme');
+121:    if (saved) return saved === 'dark';
+122:    return window.matchMedia('(prefers-color-scheme: dark)').matches;
+123:  });
+124:
+125:  useEffect(() => {
+126:    if (isDarkMode) {
+127:      document.documentElement.classList.add('dark');
+128:      localStorage.setItem('theme', 'dark');
+129:    } else {
+130:      document.documentElement.classList.remove('dark');
+131:      localStorage.setItem('theme', 'light');
+132:    }
+133:  }, [isDarkMode]);
+134:
+135:  const lastSyncedDataRef = useRef<string>('{"sectors":[],"employees":[],"requests":[]}');
+136:  const [generatedLink, setGeneratedLink] = useState('');
+137:
+138:  // --- Lógica de Dashboard (useMemo) ---
+139:  const dashboardData = useMemo(() => {
+140:    const approved = requests.filter(r => r.status === RequestStatus.APROVADO);
+141:    
+142:    // Total Geral Gasto
+143:    const totalSpent = approved.reduce((acc, curr) => acc + curr.calculatedValue, 0);
+144:    
+145:    // Dados por Setor
+146:    const expensesBySector = sectors.map(sector => {
+147:      const value = approved
+148:        .filter(r => r.sectorId === sector.id)
+149:        .reduce((acc, curr) => acc + curr.calculatedValue, 0);
+150:      return { name: sector.name, value };
+151:    }).filter(item => item.value > 0).sort((a, b) => b.value - a.value);
+152:
+153:    // Dados por Tipo (Registrado vs Fixo)
+154:    const expensesByType = [
+155:      { 
+156:        name: 'Registrado', 
+157:        value: approved.filter(r => r.employeeType === EmployeeType.REGISTRADO).reduce((acc, curr) => acc + curr.calculatedValue, 0),
+158:        color: '#2563eb' // Blue-600
+159:      },
+160:      { 
+161:        name: 'Fixo', 
+162:        value: approved.filter(r => r.employeeType === EmployeeType.FIXO).reduce((acc, curr) => acc + curr.calculatedValue, 0),
+163:        color: '#16a34a' // Green-600
+164:      }
+165:    ].filter(i => i.value > 0);
+166:
+167:    return { totalSpent, expensesBySector, expensesByType, approvedCount: approved.length };
+168:  }, [requests, sectors]);
+169:
+170:  // --- Lógica de Sincronização de Dados ---
+171:
+172:  const loadDatabase = useCallback(async (urlToUse?: string) => {
+173:    const targetUrl = urlToUse || dbUrl;
+174:    if (!targetUrl) return;
+175:
+176:    setIsSyncing(true);
+177:    try {
+178:      const response = await fetch(targetUrl);
+179:      
+180:      // Se a resposta não for ok (ex: 404, 500) ou se for HTML (página de erro do Google)
+181:      const contentType = response.headers.get("content-type");
+182:      if (!response.ok || (contentType && contentType.includes("text/html"))) {
+183:        throw new Error("O Google Apps Script não está configurado corretamente (função doGet não encontrada ou não atualizada).");
+184:      }
+185:
+186:      const data = await response.json();
+187:      
+188:      if (data && !data.error) {
+189:        const uniqueSectors = Array.from(new Map((data.sectors || []).map((s: any) => [s.id, s])).values()) as Sector[];
+190:        const uniqueEmployees = Array.from(new Map((data.employees || []).map((e: any) => [e.id, e])).values()) as Employee[];
+191:        const activeRequests = (data.requests || []).filter((r: TimeRequest) => r.status !== RequestStatus.DELETADO);
+192:        const uniqueRequests = Array.from(new Map(activeRequests.map((r: any) => [r.id, r])).values()) as TimeRequest[];
+193:
+194:        setSectors(uniqueSectors);
+195:        setEmployees(uniqueEmployees);
+196:        setRequests(uniqueRequests);
+197:        if (urlToUse) setDbUrl(urlToUse);
+198:        
+199:        lastSyncedDataRef.current = JSON.stringify({
+200:          sectors: uniqueSectors,
+201:          employees: uniqueEmployees,
+202:          requests: uniqueRequests
+203:        });
+204:
+205:        localStorage.setItem(STORAGE_KEY, JSON.stringify({
+206:          sectors: uniqueSectors,
+207:          employees: uniqueEmployees,
+208:          requests: uniqueRequests,
+209:          dbUrl: targetUrl,
+210:          folderRegId,
+211:          folderFixoId
+212:        }));
+213:      } else if (data && data.error) {
+214:        throw new Error(data.error);
+215:      }
+216:    } catch (error: any) {
+217:      // Fallback para localStorage
+218:      const localData = localStorage.getItem(STORAGE_KEY);
+219:      if (localData) {
+220:        try {
+221:          const parsed = JSON.parse(localData);
+222:          const uniqueSectors = Array.from(new Map((parsed.sectors || []).map((s: any) => [s.id, s])).values()) as Sector[];
+223:          const uniqueEmployees = Array.from(new Map((parsed.employees || []).map((e: any) => [e.id, e])).values()) as Employee[];
+224:          const activeLocalRequests = (parsed.requests || []).filter((r: TimeRequest) => r.status !== RequestStatus.DELETADO);
+225:          const uniqueRequests = Array.from(new Map(activeLocalRequests.map((r: any) => [r.id, r])).values()) as TimeRequest[];
+226:
+227:          setSectors(uniqueSectors);
+228:          setEmployees(uniqueEmployees);
+229:          setRequests(uniqueRequests);
+230:          if (parsed.folderRegId) setFolderRegId(parsed.folderRegId);
+231:          if (parsed.folderFixoId) setFolderFixoId(parsed.folderFixoId);
+232:          
+233:          lastSyncedDataRef.current = JSON.stringify({
+234:            sectors: uniqueSectors,
+235:            employees: uniqueEmployees,
+236:            requests: uniqueRequests
+237:          });
+238:        } catch (e) {
+239:          // Ignora erro de parse local
+240:          lastSyncedDataRef.current = JSON.stringify({
+241:            sectors: [],
+242:            employees: [],
+243:            requests: []
+244:          });
+245:        }
+246:      } else {
+247:        lastSyncedDataRef.current = JSON.stringify({
+248:          sectors: [],
+249:          employees: [],
+250:          requests: []
+251:        });
+252:      }
+253:    } finally {
+254:      setIsSyncing(false);
+255:      setIsInitialLoad(false);
+256:    }
+257:  }, [dbUrl, folderRegId, folderFixoId]);
+258:
+259:  const executarFechamentoSemanal = async () => {
+260:    if (!dbUrl) {
+261:      setAlertMessage("Configure a URL do Apps Script primeiro.");
+262:      return;
+263:    }
+264:    
+265:    setConfirmDialog({
+266:      message: 'CONFIRMAÇÃO DE FECHAMENTO\n\nIsso irá exportar as FOLHAS para o Drive e LIMPAR a aba de Solicitações. Deseja continuar?',
+267:      onConfirm: async () => {
+268:        setIsSyncing(true);
+269:        try {
+270:          const response = await fetch(dbUrl, {
+271:            method: 'POST',
+272:            headers: { 'Content-Type': 'text/plain' },
+273:            redirect: 'follow',
+274:            body: JSON.stringify({
+275:              action: "FECHAMENTO_SEMANAL",
+276:              data: {
+277:                folderRegId,
+278:                folderFixoId
+279:              }
+280:            }),
+281:          });
+282:          
+283:          const result = await response.json();
+284:          if (result.success) {
+285:            setAlertMessage("Fechamento concluído com sucesso!");
+286:            loadDatabase(); // Reload data to clear requests locally
+287:          } else {
+288:            setAlertMessage("Erro no fechamento: " + (result.error || "Verifique se as pastas do Google Drive estão configuradas corretamente e se você tem permissão de acesso."));
+289:          }
+290:        } catch (error) {
+291:          console.error("Erro ao executar fechamento:", error);
+292:          setAlertMessage("Falha na comunicação com o servidor.");
+293:        } finally {
+294:          setIsSyncing(false);
+295:        }
+296:      }
+297:    });
+298:  };
+299:
+300:  const fetchDriveFiles = async (folderId: string, folderName: string) => {
+301:    if (!dbUrl) {
+302:      setAlertMessage("Configure a URL do Apps Script primeiro.");
+303:      return;
+304:    }
+305:    
+306:    setIsLoadingFiles(true);
+307:    try {
+308:      const response = await fetch(dbUrl, {
+309:        method: 'POST',
+310:        headers: { 'Content-Type': 'text/plain' },
+311:        redirect: 'follow',
+312:        body: JSON.stringify({
+313:          action: "LIST_FILES",
+314:          data: { folderId }
+315:        }),
+316:      });
+317:      
+318:      const result = await response.json();
+319:      if (result.success) {
+320:        setDriveFiles(result.data);
+321:        setCurrentFolderId(folderId);
+322:        
+323:        // Update history if it's a new path
+324:        setFolderHistory(prev => {
+325:          const index = prev.findIndex(f => f.id === folderId);
+326:          if (index !== -1) {
+327:            return prev.slice(0, index + 1);
+328:          } else {
+329:            return [...prev, { id: folderId, name: folderName }];
+330:          }
+331:        });
+332:      } else {
+333:        setAlertMessage("Erro ao carregar arquivos: " + (result.error || "Verifique se as pastas do Google Drive estão configuradas corretamente e se você tem permissão de acesso."));
+334:      }
+335:    } catch (error) {
+336:      console.error("Erro ao listar arquivos:", error);
+337:      setAlertMessage("Falha na comunicação com o servidor.");
+338:    } finally {
+339:      setIsLoadingFiles(false);
+340:    }
+341:  };
+342:
+343:  const exportToPDF = async () => {
+344:    if (!dbUrl) {
+345:      setAlertMessage("Configure a URL do Apps Script primeiro.");
+346:      return;
+347:    }
+348:    
+349:    setIsSyncing(true);
+350:    try {
+351:      const response = await fetch(dbUrl, {
+352:        method: 'POST',
+353:        headers: { 'Content-Type': 'text/plain' },
+354:        redirect: 'follow',
+355:        body: JSON.stringify({
+356:          action: "EXPORT_PDF",
+357:          data: {
+358:            folderRegId,
+359:            folderFixoId
+360:          }
+361:        }),
+362:      });
+363:      
+364:      const result = await response.json();
+365:      if (result.success) {
+366:        setAlertMessage("Fichas exportadas com sucesso!");
+367:      } else {
+368:        setAlertMessage("Erro ao exportar: " + (result.error || "Verifique se as pastas do Google Drive estão configuradas corretamente e se você tem permissão de acesso."));
+369:      }
+370:    } catch (error) {
+371:      console.error("Erro na exportação:", error);
+372:      setAlertMessage("Erro ao comunicar com o servidor.");
+373:    } finally {
+374:      setIsSyncing(false);
+375:    }
+376:  };
+377:
+378:  const syncDatabase = useCallback(async (currentData: { sectors: Sector[], employees: Employee[], requests: TimeRequest[] }) => {
+379:    if (!dbUrl) return;
+380:
+381:    setIsSyncing(true);
+382:
+383:    try {
+384:      localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...currentData, dbUrl, folderRegId, folderFixoId }));
+385:      await fetch(dbUrl, {
+386:        method: 'POST',
+387:        headers: { 'Content-Type': 'text/plain' },
+388:        redirect: 'follow',
+389:        body: JSON.stringify({
+390:          action: "SYNC_DATABASE",
+391:          data: {
+392:            sectors: currentData.sectors,
+393:            employees: currentData.employees,
+394:            requests: currentData.requests,
+395:            folderRegId,
+396:            folderFixoId,
+397:            isAdmin: isAuth
+398:          }
+399:        }),
+400:      });
+401:    } catch (error) {
+402:      // Falha silenciosa na sincronização, dados já estão no localStorage
+403:    } finally {
+404:      setIsSyncing(false);
+405:    }
+406:  }, [dbUrl, folderRegId, folderFixoId, isAuth]);
+407:
+408:  useEffect(() => {
+409:    if (hasLoadedRef.current) return;
+410:    hasLoadedRef.current = true;
+411:
+412:    const params = new URLSearchParams(window.location.search);
+413:    const token = params.get('t');
+414:
+415:    if (token) {
+416:      const timestamp = parseInt(token, 10);
+417:      const now = Date.now();
+418:      if (isNaN(timestamp) || (now - timestamp > 24 * 60 * 60 * 1000)) {
+419:        setState(prev => ({ ...prev, view: 'EXPIRED' }));
+420:        return;
+421:      }
+422:    }
+423:    
+424:    const localData = localStorage.getItem(STORAGE_KEY);
+425:    let initialUrl = DEFAULT_SHEET_URL;
+426:    if (localData) {
+427:      try {
+428:        const parsed = JSON.parse(localData);
+429:        // Remove dbUrl from local storage to prevent old links from causing issues
+430:        if (parsed.dbUrl) {
+431:          delete parsed.dbUrl;
+432:          localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed));
+433:        }
+434:        if (parsed.folderRegId) setFolderRegId(parsed.folderRegId);
+435:        if (parsed.folderFixoId) setFolderFixoId(parsed.folderFixoId);
+436:      } catch (e) {}
+437:    }
+438:    
+439:    loadDatabase(initialUrl);
+440:  }, [loadDatabase]);
+441:
+442:  useEffect(() => {
+443:    if (!isInitialLoad && state.view !== 'EXPIRED') {
+444:      const currentDataString = JSON.stringify({ sectors, employees, requests });
+445:      if (currentDataString !== lastSyncedDataRef.current) {
+446:        const timer = setTimeout(() => {
+447:          syncDatabase({ sectors, employees, requests });
+448:          lastSyncedDataRef.current = currentDataString;
+449:        }, 1500);
+450:        return () => clearTimeout(timer);
+451:      }
+452:    }
+453:  }, [sectors, employees, requests, isInitialLoad, syncDatabase, state.view]);
+454:
+455:  useEffect(() => {
+456:    if (showFormModal && !editingRequestId) {
+457:      const weekDays = getWeekDays(new Date(currentWeek));
+458:      setModalRecords(weekDays.map(date => ({
+459:        date, realEntry: '', punchEntry: '', punchExit: '', realExit: '', isFolgaVendida: false
+460:      })));
+461:    }
+462:  }, [showFormModal, currentWeek, editingRequestId]);
+463:
+464:  useEffect(() => {
+465:    if (!isInitialLoad) {
+466:      const currentData = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
+467:      localStorage.setItem(STORAGE_KEY, JSON.stringify({
+468:        ...currentData,
+469:        dbUrl,
+470:        folderRegId,
+471:        folderFixoId
+472:      }));
+473:    }
+474:  }, [dbUrl, folderRegId, folderFixoId, isInitialLoad]);
+475:
+476:  // --- Handlers ---
+477:  const handleAdminLogin = () => {
+478:    if (adminPassword === '123') {
+479:      setIsAuth(true);
+480:      setState(prev => ({ ...prev, view: 'ADMIN' }));
+481:      setAdminPassword('');
+482:    } else {
+483:      setAlertMessage('Senha incorreta!');
+484:    }
+485:  };
+486:
+487:  const generateAccessLink = () => {
+488:    const timestamp = Date.now();
+489:    const link = `${window.location.origin}${window.location.pathname}?t=${timestamp}`;
+490:    setGeneratedLink(link);
+491:    navigator.clipboard.writeText(link);
+492:    setAlertMessage('Link de acesso válido por 24h copiado!');
+493:  };
+494:
+495:  const submitRequest = () => {
+496:    let targetEmployeeId = selectedEmployee;
+497:    let targetSectorId = selectedSector;
+498:    let targetFlowType = state.flowType;
+499:
+500:    if (editingRequestId) {
+501:      const originalReq = requests.find(r => r.id === editingRequestId);
+502:      if (originalReq) {
+503:        targetEmployeeId = originalReq.employeeId;
+504:        targetSectorId = originalReq.sectorId;
+505:        targetFlowType = originalReq.employeeType;
+506:      }
+507:    }
+508:
+509:    const employee = employees.find(e => String(e.id) === String(targetEmployeeId));
+510:    const sector = sectors.find(s => String(s.id) === String(employee?.sectorId || targetSectorId));
+511:    
+512:    if (targetFlowType === EmployeeType.REGISTRADO && !employee) {
+513:      setAlertMessage("Erro: Dados do funcionário não encontrados para recálculo.");
+514:      return;
+515:    }
+516:
+517:    let totalDiffHours = 0;
+518:    let totalPayment = 0;
+519:
+520:    if (targetFlowType === EmployeeType.REGISTRADO && employee) {
+521:      const hourlyBase = (employee.salary / employee.monthlyHours);
+522:      const overtimeRate = hourlyBase * 1.25;
+523:      
+524:      modalRecords.forEach(r => {
+525:        let dailyHours = 0;
+526:
+527:        if (r.isFolgaVendida) {
+528:          if (r.realEntry && r.realExit) {
+529:             const start = timeToDecimal(r.realEntry);
+530:             const end = timeToDecimal(r.realExit);
+531:             let diff = end - start;
+532:             if (diff < 0) diff += 24;
+533:             dailyHours += diff;
+534:          }
+535:        } else {
+536:          if (r.realEntry && r.punchEntry) {
+537:            const real = timeToDecimal(r.realEntry);
+538:            const punch = timeToDecimal(r.punchEntry);
+539:            if (real < punch) {
+540:              dailyHours += (punch - real);
+541:            }
+542:          }
+543:          if (r.realExit && r.punchExit) {
+544:            const real = timeToDecimal(r.realExit);
+545:            const punch = timeToDecimal(r.punchExit);
+546:            if (real > punch) {
+547:              dailyHours += (real - punch);
+548:            }
+549:          }
+550:        }
+551:        totalDiffHours += dailyHours;
+552:      });
+553:      totalPayment = totalDiffHours * overtimeRate;
+554:    } else {
+555:      const hourlyRate = sector?.fixedRate || 0;
+556:      modalRecords.forEach(r => { 
+557:        if (r.realEntry && r.realExit) {
+558:          const start = timeToDecimal(r.realEntry);
+559:          const end = timeToDecimal(r.realExit);
+560:          let dailyHours = end - start;
+561:          if (dailyHours < 0) dailyHours += 24;
+562:          if (dailyHours > 0) {
+563:            totalPayment += (dailyHours * hourlyRate) + 12;
+564:            totalDiffHours += dailyHours;
+565:          }
+566:        }
+567:      });
+568:    }
+569:
+570:    if (editingRequestId) {
+571:      setRequests(requests.map(r => r.id === editingRequestId ? {
+572:        ...r, 
+573:        records: modalRecords, 
+574:        calculatedValue: totalPayment, 
+575:        totalTimeDecimal: totalDiffHours,
+576:        editJustification 
+577:      } : r));
+578:      setEditingRequestId(null);
+579:      setEditJustification('');
+580:    } else {
+581:      const newReq: TimeRequest = {
+582:        id: Math.random().toString(36).substr(2, 9),
+583:        employeeId: employee?.id || 'fixo-' + Date.now(),
+584:        employeeName: employee?.name || selectedEmployee || 'Colaborador Fixo',
+585:        employeeType: targetFlowType!,
+586:        sectorId: sector?.id || '',
+587:        sectorName: sector?.name || '',
+588:        weekStarting: currentWeek,
+589:        records: modalRecords,
+590:        status: RequestStatus.PENDENTE,
+591:        calculatedValue: totalPayment,
+592:        totalTimeDecimal: totalDiffHours,
+593:        createdAt: new Date().toISOString()
+594:      };
+595:      setRequests([newReq, ...requests]);
+596:      setState(prev => ({ ...prev, view: 'SUCCESS' }));
+597:    }
+598:    setShowFormModal(false);
+599:  };
+600:
+601:  // --- UI Components ---
+602:
+603:  const RequestCard: React.FC<{ req: TimeRequest }> = ({ req }) => {
+604:    const [isExpanded, setIsExpanded] = useState(false);
+605:
+606:    const getDailyHours = (r: TimeRecord, type: EmployeeType) => {
+607:        let total = 0;
+608:        if (type === EmployeeType.FIXO) {
+609:            if (r.realEntry && r.realExit) {
+610:                let diff = timeToDecimal(r.realExit) - timeToDecimal(r.realEntry);
+611:                if (diff < 0) diff += 24;
+612:                total = diff;
+613:            }
+614:        } else {
+615:            if (r.isFolgaVendida) {
+616:                 if (r.realEntry && r.realExit) {
+617:                    let diff = timeToDecimal(r.realExit) - timeToDecimal(r.realEntry);
+618:                    if (diff < 0) diff += 24;
+619:                    total = diff;
+620:                 }
+621:            } else {
+622:                 if (r.realEntry && r.punchEntry) {
+623:                    const diff = timeToDecimal(r.punchEntry) - timeToDecimal(r.realEntry);
+624:                    if(diff > 0) total += diff;
+625:                 }
+626:                 if (r.realExit && r.punchExit) {
+627:                    const diff = timeToDecimal(r.realExit) - timeToDecimal(r.punchExit);
+628:                    if(diff > 0) total += diff;
+629:                 }
+630:            }
+631:        }
+632:        return total > 0 ? formatDecimalHours(total) : '-';
+633:    };
+634:
+635:    return (
+636:      <div className="bg-white dark:bg-gray-800 p-4 rounded-2xl border border-gray-100 dark:border-gray-700 shadow-sm hover:shadow-md transition mb-3 group">
+637:        <div className="flex justify-between items-start mb-2">
+638:          <span className={`px-2 py-0.5 rounded text-[9px] font-black uppercase ${req.employeeType === EmployeeType.REGISTRADO ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400' : 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400'}`}>
+639:            {req.employeeType}
+640:          </span>
+641:          <div className="text-right">
+642:            <p className="text-[10px] text-gray-500 dark:text-gray-400 font-bold mb-0.5">{formatDecimalHours(req.totalTimeDecimal)}</p>
+643:            <p className="text-sm font-black text-gray-900 dark:text-white">{formatCurrency(req.calculatedValue)}</p>
+644:          </div>
+645:        </div>
+646:        <h4 className="text-sm font-bold text-gray-800 dark:text-gray-200 line-clamp-1">{req.employeeName}</h4>
+647:        <p className="text-[10px] text-gray-400 dark:text-gray-500 mb-3">{req.sectorName} • Sem: {new Date(req.weekStarting).toLocaleDateString('pt-BR')}</p>
+648:        
+649:        {isExpanded && (
+650:            <div className="mt-2 mb-4 bg-gray-50 dark:bg-gray-900 rounded-xl p-2 overflow-x-auto">
+651:                <table className="w-full text-[10px] text-left">
+652:                    <thead>
+653:                        <tr className="text-gray-400 dark:text-gray-500 border-b border-gray-200 dark:border-gray-700">
+654:                            <th className="pb-1 font-semibold">Dia</th>
+655:                            <th className="pb-1 font-semibold">Ent.</th>
+656:                            <th className="pb-1 font-semibold text-gray-300 dark:text-gray-600">P.Ent</th>
+657:                            <th className="pb-1 font-semibold text-gray-300 dark:text-gray-600">P.Sai</th>
+658:                            <th className="pb-1 font-semibold">Sai.</th>
+659:                            <th className="pb-1 font-semibold text-right">H.</th>
+660:                        </tr>
+661:                    </thead>
+662:                    <tbody>
+663:                        {req.records.map((r, idx) => (
+664:                            <tr key={idx} className={`border-b border-gray-100 dark:border-gray-800 last:border-0 ${r.isFolgaVendida ? 'bg-blue-50/50 dark:bg-blue-900/10' : ''}`}>
+665:                                <td className="py-1.5 font-bold text-gray-600 dark:text-gray-400">
+666:                                    {new Date(r.date + 'T00:00:00').toLocaleDateString('pt-BR', { weekday: 'short' }).slice(0,3)}
+667:                                    {r.isFolgaVendida && <span className="block text-[8px] text-blue-600 dark:text-blue-400 font-black">FOLGA</span>}
+668:                                </td>
+669:                                <td className="py-1.5 text-gray-700 dark:text-gray-300">{r.realEntry || '-'}</td>
+670:                                <td className="py-1.5 text-gray-400 dark:text-gray-500">{r.punchEntry || '-'}</td>
+671:                                <td className="py-1.5 text-gray-400 dark:text-gray-500">{r.punchExit || '-'}</td>
+672:                                <td className="py-1.5 text-gray-700 dark:text-gray-300">{r.realExit || '-'}</td>
+673:                                <td className="py-1.5 text-right font-bold text-gray-800 dark:text-gray-200">{getDailyHours(r, req.employeeType)}</td>
+674:                            </tr>
+675:                        ))}
+676:                    </tbody>
+677:                </table>
+678:            </div>
+679:        )}
+680:
+681:        <div className="flex gap-1 items-center">
+682:            <button 
+683:                onClick={() => setIsExpanded(!isExpanded)} 
+684:                className="bg-gray-50 dark:bg-gray-700 text-gray-400 dark:text-gray-300 p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-600 transition mr-1"
+685:                title="Ver Detalhes"
+686:            >
+687:                {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+688:            </button>
+689:
+690:          {req.status === RequestStatus.PENDENTE && (
+691:            <>
+692:              <button onClick={() => setRequests(requests.map(r => r.id === req.id ? {...r, status: RequestStatus.APROVADO} : r))} className="flex-1 bg-green-50 text-green-600 p-2 rounded-lg hover:bg-green-600 hover:text-white transition flex justify-center"><CheckCircle className="w-4 h-4" /></button>
+693:              <button onClick={() => setRequests(requests.map(r => r.id === req.id ? {...r, status: RequestStatus.REJEITADO} : r))} className="flex-1 bg-red-50 text-red-600 p-2 rounded-lg hover:bg-red-600 hover:text-white transition flex justify-center"><XCircle className="w-4 h-4" /></button>
+694:            </>
+695:          )}
+696:          <button onClick={() => {
+697:            setEditingRequestId(req.id);
+698:            setModalRecords(JSON.parse(JSON.stringify(req.records)));
+699:            setCurrentWeek(req.weekStarting);
+700:            setEditJustification(req.editJustification || '');
+701:            setShowFormModal(true);
+702:          }} className="flex-1 bg-gray-50 dark:bg-gray-700 text-gray-400 dark:text-gray-300 p-2 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600 transition flex justify-center"><Edit2 className="w-4 h-4" /></button>
+703:          <button onClick={() => setRequests(requests.map(r => r.id === req.id ? {...r, status: RequestStatus.DELETADO} : r))} className="bg-gray-50 dark:bg-gray-700 text-gray-300 dark:text-gray-400 p-2 rounded-lg hover:bg-red-50 dark:hover:bg-red-900/30 hover:text-red-400 dark:hover:text-red-400 transition flex justify-center"><XCircle className="w-4 h-4" /></button>
+704:        </div>
+705:      </div>
+706:    );
+707:  };
+708:
+709:  const renderAdminRequestsSubView = () => (
+710:    <div className="h-full flex flex-col gap-6">
+711:      <div className="flex flex-col md:flex-row justify-between items-start md:items-center bg-white dark:bg-gray-800 p-6 rounded-3xl shadow-sm border border-gray-100 dark:border-gray-700 gap-4">
+712:        <h2 className="text-xl md:text-2xl font-black text-gray-800 dark:text-gray-200">Fluxo de Solicitações</h2>
+713:        <button onClick={() => syncDatabase({ sectors, employees, requests })} className="w-full md:w-auto flex items-center justify-center gap-2 bg-blue-600 text-white px-4 py-3 rounded-xl text-sm font-bold shadow-lg shadow-blue-100 dark:shadow-none hover:bg-blue-700 active:scale-95 transition-transform"><RefreshCw className="w-4 h-4" /> Forçar Sincronização</button>
+714:      </div>
+715:
+716:      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 flex-1 min-h-0 pb-20 md:pb-0">
+717:        {[
+718:            { title: 'Pendentes', status: RequestStatus.PENDENTE, icon: Clock, color: 'blue' },
+719:            { title: 'Aprovados', status: RequestStatus.APROVADO, icon: CheckCircle, color: 'green' },
+720:            { title: 'Rejeitados', status: RequestStatus.REJEITADO, icon: XCircle, color: 'red' }
+721:        ].map((col) => (
+722:            <div key={col.status} className={`flex flex-col rounded-3xl p-4 border ${col.color === 'blue' ? 'bg-gray-100/50 dark:bg-gray-800/50 border-gray-200/50 dark:border-gray-700/50' : col.color === 'green' ? 'bg-green-50/30 dark:bg-green-900/10 border-green-100/50 dark:border-green-800/30' : 'bg-red-50/30 dark:bg-red-900/10 border-red-100/50 dark:border-red-800/30'}`}>
+723:                <div className="flex items-center justify-between mb-4 px-2">
+724:                    <h3 className={`text-sm font-black uppercase flex items-center gap-2 text-${col.color}-600 dark:text-${col.color}-400`}>
+725:                        <col.icon className="w-4 h-4" /> {col.title}
+726:                    </h3>
+727:                    <span className={`bg-${col.color}-100 dark:bg-${col.color}-900/30 text-${col.color}-700 dark:text-${col.color}-400 text-[10px] px-2 py-0.5 rounded-full font-bold`}>
+728:                        {requests.filter(r => r.status === col.status).length}
+729:                    </span>
+730:                </div>
+731:                <div className="flex-1 overflow-y-auto pr-1">
+732:                    {requests.filter(r => r.status === col.status).map(req => <RequestCard key={req.id} req={req} />)}
+733:                </div>
+734:            </div>
+735:        ))}
+736:      </div>
+737:    </div>
+738:  );
+739:
+740:  // --- Renderização Principal ---
+741:
+742:  if (state.view === 'EXPIRED') {
+743:    return (
+744:      <div className="flex flex-col items-center justify-center min-h-screen text-center px-4 bg-gray-100 dark:bg-gray-900">
+745:        <div className="bg-white dark:bg-gray-800 p-12 rounded-3xl shadow-2xl max-w-lg w-full border border-transparent dark:border-gray-700">
+746:          <div className="bg-red-100 dark:bg-red-900/30 w-20 h-20 rounded-2xl flex items-center justify-center mx-auto mb-8 text-red-600 dark:text-red-400"><Lock className="w-10 h-10" /></div>
+747:          <h1 className="text-3xl font-bold mb-4 dark:text-white">Acesso Expirado</h1>
+748:          <p className="text-gray-500 dark:text-gray-400 mb-8">Este link expirou. Peça um novo acesso.</p>
+749:          <button onClick={() => window.location.href = window.location.origin + window.location.pathname} className="bg-gray-800 dark:bg-gray-700 text-white px-8 py-3 rounded-xl font-bold hover:bg-gray-700 dark:hover:bg-gray-600 transition">Início</button>
+750:        </div>
+751:      </div>
+752:    );
+753:  }
+754:
+755:  // Admin Navigation Items
+756:  const navItems = [
+757:    { id: 'DASHBOARD', label: 'Dash', icon: LayoutDashboard },
+758:    { id: 'SECTORS', label: 'Setores', icon: MapPin },
+759:    { id: 'EMPLOYEES', label: 'Func.', icon: Users },
+760:    { id: 'REQUESTS', label: 'Solicit.', icon: ClipboardList },
+761:    { id: 'INTEGRATIONS', label: 'Sync', icon: Database },
+762:    { id: 'FILES', label: 'Arquivos', icon: Folder },
+763:  ];
+764:
+765:  const appsScriptCode = `
+766:/**
+767: * ============================================================
+768: * SEÇÃO: API PARA O APLICATIVO WEB (REACT)
+769: * ============================================================
+770: */
+771:
+772:function doGet(e) {
+773:  const ss = SpreadsheetApp.getActiveSpreadsheet();
+774:  
+775:  // Lê os dados das abas
+776:  const sectors = getSheetData(ss, "Setores");
+777:  const employees = getSheetData(ss, "Funcionarios");
+778:  const requests = getSheetData(ss, "Solicitacoes");
+779:  
+780:  return ContentService.createTextOutput(JSON.stringify({
+781:    sectors: sectors,
+782:    employees: employees,
+783:    requests: requests
+784:  })).setMimeType(ContentService.MimeType.JSON);
+785:}
+786:
+787:function doPost(e) {
+788:  const lock = LockService.getScriptLock();
+789:  try {
+790:    lock.waitLock(10000); // Aguarda até 10 segundos por um lock
+791:    // O React envia como text/plain para evitar o CORS preflight
+792:    const body = JSON.parse(e.postData.contents);
+793:    
+794:    if (body.action === "SYNC_DATABASE") {
+795:      const ss = SpreadsheetApp.getActiveSpreadsheet();
+796:      
+797:      // Salvar IDs das pastas se fornecidos
+798:      if (body.data.folderRegId) {
+799:        PropertiesService.getScriptProperties().setProperty('FOLDER_REG_ID', body.data.folderRegId);
+800:      }
+801:      if (body.data.folderFixoId) {
+802:        PropertiesService.getScriptProperties().setProperty('FOLDER_FIXO_ID', body.data.folderFixoId);
+803:      }
+804:      
+805:      // Atualiza as abas principais usadas pelo React
+806:      if (body.data.isAdmin) {
+807:        updateSheet(ss, "Setores", body.data.sectors);
+808:        updateSheet(ss, "Funcionarios", body.data.employees);
+809:      }
+810:      mergeRequests(ss, "Solicitacoes", body.data.requests, body.data.isAdmin);
+811:      
+812:      // Atualiza a aba de registros detalhados (opcional, para relatórios na planilha)
+813:      rebuildRegistrosDetalhados(ss);
+814:      
+815:      // Executa a lógica de distribuição de dados nas fichas se houver aprovados
+816:      // Isso garante que a visualização na planilha fique atualizada
+817:      const allRequests = getSheetData(ss, "Solicitacoes");
+818:      processarHEsAprovadas(ss, allRequests);
+819:      
+820:      return ContentService.createTextOutput(JSON.stringify({ success: true }))
+821:        .setMimeType(ContentService.MimeType.JSON);
+822:    }
+823:    
+824:    if (body.action === "EXPORT_PDF") {
+825:      exportarFolhasSextaFeira(body.data.folderRegId, body.data.folderFixoId);
+826:      return ContentService.createTextOutput(JSON.stringify({ success: true }))
+827:        .setMimeType(ContentService.MimeType.JSON);
+828:    }
+829:    
+830:    if (body.action === "FECHAMENTO_SEMANAL") {
+831:      executarFechamentoSemanalAPI(body.data.folderRegId, body.data.folderFixoId);
+832:      return ContentService.createTextOutput(JSON.stringify({ success: true }))
+833:        .setMimeType(ContentService.MimeType.JSON);
+834:    }
+835:    
+836:    if (body.action === "LIST_FILES") {
+837:      const result = listDriveFiles(body.data.folderId);
+838:      return ContentService.createTextOutput(JSON.stringify({ success: true, data: result }))
+839:        .setMimeType(ContentService.MimeType.JSON);
+840:    }
+841:  } catch (error) {
+842:    return ContentService.createTextOutput(JSON.stringify({ success: false, error: String(error) }))
+843:      .setMimeType(ContentService.MimeType.JSON);
+844:  } finally {
+845:    lock.releaseLock();
+846:  }
+847:}
+848:
+849:function rebuildRegistrosDetalhados(ss) {
+850:  const requests = getSheetData(ss, "Solicitacoes");
+851:  const flattened = [];
+852:  
+853:  requests.forEach(req => {
+854:    let recs = typeof req.records === 'string' ? JSON.parse(req.records) : req.records;
+855:    if (Array.isArray(recs)) {
+856:      recs.forEach(rec => {
+857:        flattened.push({
+858:          id_solicitacao: req.id,
+859:          funcionario: req.employeeName,
+860:          tipo: req.employeeType,
+861:          setor: req.sectorName,
+862:          data_semana: req.weekStarting,
+863:          status: req.status,
+864:          valor_total_pedido: req.calculatedValue,
+865:          data_registro: rec.date,
+866:          entrada_real: rec.realEntry,
+867:          entrada_ponto: rec.punchEntry,
+868:          saida_ponto: rec.punchExit,
+869:          saida_real: rec.realExit,
+870:          folga_vendida: rec.isFolgaVendida ? "SIM" : "NÃO",
+871:          criado_em: req.createdAt,
+872:          justificativa_edicao: req.editJustification || ''
+873:        });
+874:      });
+875:    }
+876:  });
+877:  
+878:  updateSheet(ss, "Registros_Detalhados", flattened);
+879:}
+880:
+881:function updateSheet(ss, sheetName, dataArray) {
+882:  let sheet = ss.getSheetByName(sheetName);
+883:  if (!sheet) {
+884:    sheet = ss.insertSheet(sheetName);
+885:  }
+886:  
+887:  if (!dataArray || dataArray.length === 0) {
+888:    // Se não há dados, limpa a planilha mantendo o cabeçalho se existir
+889:    if (sheet.getLastRow() > 1) {
+890:      sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn()).clearContent();
+891:    }
+892:    return;
+893:  }
+894:  
+895:  // Extrai cabeçalhos
+896:  const headers = Object.keys(dataArray[0]);
+897:  
+898:  // Prepara matriz de dados
+899:  const rows = dataArray.map(obj => {
+900:    return headers.map(h => {
+901:      let val = obj[h];
+902:      if (typeof val === 'object') {
+903:        return JSON.stringify(val);
+904:      }
+905:      return val;
+906:    });
+907:  });
+908:  
+909:  // Limpa a planilha
+910:  sheet.clearContents();
+911:  
+912:  // Escreve cabeçalhos e dados
+913:  sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+914:  sheet.getRange(2, 1, rows.length, headers.length).setValues(rows);
+915:}
+916:
+917:function mergeRequests(ss, sheetName, newRequests, isAdmin) {
+918:  let sheet = ss.getSheetByName(sheetName);
+919:  if (!sheet) {
+920:    sheet = ss.insertSheet(sheetName);
+921:  }
+922:  
+923:  if (!newRequests || newRequests.length === 0) return;
+924:  
+925:  const headers = Object.keys(newRequests[0]);
+926:  if (sheet.getLastRow() === 0) {
+927:    sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+928:  }
+929:  
+930:  const existingData = sheet.getDataRange().getValues();
+931:  const sheetHeaders = existingData[0] || headers;
+932:  const idIndex = sheetHeaders.indexOf("id");
+933:  const statusIndex = sheetHeaders.indexOf("status");
+934:  
+935:  const existingIds = {};
+936:  if (existingData.length > 1 && idIndex !== -1) {
+937:    for (let i = 1; i < existingData.length; i++) {
+938:      existingIds[existingData[i][idIndex]] = i + 1;
+939:    }
+940:  }
+941:  
+942:  let backupSheet = ss.getSheetByName("BACKUP");
+943:  if (!backupSheet) {
+944:    backupSheet = ss.insertSheet("BACKUP");
+945:    backupSheet.getRange(1, 1, 1, sheetHeaders.length).setValues([sheetHeaders]);
+946:  } else if (backupSheet.getLastRow() === 0) {
+947:    backupSheet.getRange(1, 1, 1, sheetHeaders.length).setValues([sheetHeaders]);
+948:  }
+949:  
+950:  newRequests.forEach(req => {
+951:    const rowData = sheetHeaders.map(h => {
+952:      let val = req[h];
+953:      return typeof val === 'object' ? JSON.stringify(val) : val;
+954:    });
+955:    
+956:    if (idIndex !== -1 && existingIds[req.id]) {
+957:      // Update existing
+958:      if (isAdmin) {
+959:        const existingRow = existingIds[req.id];
+960:        let existingStatus = "PENDENTE";
+961:        if (statusIndex !== -1 && existingRow <= existingData.length) {
+962:          existingStatus = existingData[existingRow - 1][statusIndex];
+963:        }
+964:        
+965:        // Se a solicitação já foi aprovada/rejeitada no servidor,
+966:        // não deixe um cliente com estado "PENDENTE" sobrescrever isso.
+967:        if (existingStatus !== "PENDENTE" && req.status === "PENDENTE") {
+968:          // Ignora a atualização para não apagar o status aprovado
+969:        } else {
+970:          sheet.getRange(existingRow, 1, 1, sheetHeaders.length).setValues([rowData]);
+971:        }
+972:      }
+973:    } else {
+974:      // Append new
+975:      sheet.appendRow(rowData);
+976:      backupSheet.appendRow(rowData);
+977:      if (idIndex !== -1 && req.id) {
+978:        existingIds[req.id] = sheet.getLastRow();
+979:      }
+980:    }
+981:  });
+982:}
+983:
+984:/**
+985: * Menu Personalizado
+986: */
+987:function onOpen() {
+988:  const ui = SpreadsheetApp.getUi();
+989:  ui.createMenu('⚙️ Sistema HE')
+990:    .addItem('Executar Sincronização Manual', 'testeManual')
+991:    .addItem('Ativar Automação (Ao Editar Solicitações)', 'configuringGatilhoEdicao')
+992:    .addSeparator()
+993:    .addItem('🚀 Exportar Fichas Agora (Manual)', 'exportarFolhasSextaFeira')
+994:    .addItem('🛑 FECHAMENTO SEMANAL (Salvar + Limpar Tudo)', 'executarFechamentoSemanal')
+995:    .addToUi();
+996:}
+997:
+998:/**
+999: * ============================================================
+1000: * SEÇÃO: FECHAMENTO SEMANAL E LIMPEZA
+1001: * ============================================================
+1002: */
+1003:
+1004:function executarFechamentoSemanal() {
+1005:  const ui = SpreadsheetApp.getUi();
+1006:  const resposta = ui.alert('CONFIRMAÇÃO DE FECHAMENTO', 
+1007:    'Isso irá exportar as FOLHAS para o Drive e LIMPAR a aba de Solicitações. Deseja continuar?', 
+1008:    ui.ButtonSet.YES_NO);
+1009:
+1010:  if (resposta !== ui.Button.YES) return;
+1011:
+1012:  const ss = SpreadsheetApp.getActiveSpreadsheet();
+1013:
+1014:  try {
+1015:    // 1. Exporta antes de apagar os dados
+1016:    exportarFolhasSextaFeira();
+1017:    SpreadsheetApp.flush(); 
+1018:  } catch (e) {
+1019:    ui.alert("Erro durante a exportação: " + String(e));
+1020:    return;
+1021:  }
+1022:
+1023:  // 2. Backup e Limpa o banco de dados (Solicitacoes)
+1024:  const abaSolicitacoes = ss.getSheetByName("Solicitacoes");
+1025:  if (abaSolicitacoes && abaSolicitacoes.getLastRow() > 1) {
+1026:    let abaBackup = ss.getSheetByName("BACKUP");
+1027:    if (!abaBackup) {
+1028:      abaBackup = ss.insertSheet("BACKUP");
+1029:      let headers = abaSolicitacoes.getRange(1, 1, 1, abaSolicitacoes.getLastColumn()).getValues();
+1030:      abaBackup.getRange(1, 1, 1, headers[0].length).setValues(headers);
+1031:    }
+1032:    
+1033:    let dadosParaBackup = abaSolicitacoes.getRange(2, 1, abaSolicitacoes.getLastRow() - 1, abaSolicitacoes.getLastColumn()).getValues();
+1034:    abaBackup.getRange(abaBackup.getLastRow() + 1, 1, dadosParaBackup.length, dadosParaBackup[0].length).setValues(dadosParaBackup);
+1035:
+1036:    abaSolicitacoes.getRange(2, 1, abaSolicitacoes.getLastRow() - 1, abaSolicitacoes.getLastColumn()).clearContent();
+1037:  }
+1038:
+1039:  // 3. Limpa as abas visuais (Fichas)
+1040:  const abasParaLimpar = ["HE - REGISTRADO", "HE - FIXO"];
+1041:  abasParaLimpar.forEach(nome => {
+1042:    const aba = ss.getSheetByName(nome);
+1043:    if (aba) {
+1044:      let range = aba.getDataRange();
+1045:      let matriz = range.getValues();
+1046:      let formulas = range.getFormulas(); // Coleta as fórmulas para não apagá-las
+1047:      
+1048:      limparMatriz(matriz, nome.includes("REGISTRADO") ? "REGISTRADO" : "FIXO");
+1049:      
+1050:      restaurarFormulas(matriz, formulas); // Restaura as fórmulas antes de salvar
+1051:      aba.getRange(1, 1, matriz.length, matriz[0].length).setValues(matriz);
+1052:    }
+1053:  });
+1054:
+1055:  ui.alert("Fechamento concluído com sucesso!");
+1056:}
+1057:
+1058:function executarFechamentoSemanalAPI(paramFolderRegId, paramFolderFixoId) {
+1059:  const ss = SpreadsheetApp.getActiveSpreadsheet();
+1060:
+1061:  try {
+1062:    // 1. Exporta antes de apagar os dados
+1063:    exportarFolhasSextaFeira(paramFolderRegId, paramFolderFixoId);
+1064:    SpreadsheetApp.flush(); 
+1065:  } catch (e) {
+1066:    throw new Error("Erro durante a exportação: " + String(e));
+1067:  }
+1068:
+1069:  // 2. Backup e Limpa o banco de dados (Solicitacoes)
+1070:  const abaSolicitacoes = ss.getSheetByName("Solicitacoes");
+1071:  if (abaSolicitacoes && abaSolicitacoes.getLastRow() > 1) {
+1072:    let abaBackup = ss.getSheetByName("BACKUP");
+1073:    if (!abaBackup) {
+1074:      abaBackup = ss.insertSheet("BACKUP");
+1075:      let headers = abaSolicitacoes.getRange(1, 1, 1, abaSolicitacoes.getLastColumn()).getValues();
+1076:      abaBackup.getRange(1, 1, 1, headers[0].length).setValues(headers);
+1077:    }
+1078:    
+1079:    let dadosParaBackup = abaSolicitacoes.getRange(2, 1, abaSolicitacoes.getLastRow() - 1, abaSolicitacoes.getLastColumn()).getValues();
+1080:    abaBackup.getRange(abaBackup.getLastRow() + 1, 1, dadosParaBackup.length, dadosParaBackup[0].length).setValues(dadosParaBackup);
+1081:
+1082:    abaSolicitacoes.getRange(2, 1, abaSolicitacoes.getLastRow() - 1, abaSolicitacoes.getLastColumn()).clearContent();
+1083:  }
+1084:
+1085:  // 3. Limpa as abas visuais (Fichas)
+1086:  const abasParaLimpar = ["HE - REGISTRADO", "HE - FIXO"];
+1087:  abasParaLimpar.forEach(nome => {
+1088:    const aba = ss.getSheetByName(nome);
+1089:    if (aba) {
+1090:      let range = aba.getDataRange();
+1091:      let matriz = range.getValues();
+1092:      let formulas = range.getFormulas(); // Coleta as fórmulas para não apagá-las
+1093:      
+1094:      limparMatriz(matriz, nome.includes("REGISTRADO") ? "REGISTRADO" : "FIXO");
+1095:      
+1096:      restaurarFormulas(matriz, formulas); // Restaura as fórmulas antes de salvar
+1097:      aba.getRange(1, 1, matriz.length, matriz[0].length).setValues(matriz);
+1098:    }
+1099:  });
+1100:}
+1101:
+1102:function extractFolderId(input) {
+1103:  if (!input) return '';
+1104:  const match = String(input).match(/[-\w]{25,}/);
+1105:  return match ? match[0] : input;
+1106:}
+1107:
+1108:function listDriveFiles(folderId) {
+1109:  if (!folderId) return { folders: [], files: [] };
+1110:  const cleanId = extractFolderId(folderId);
+1111:  try {
+1112:    const folder = DriveApp.getFolderById(cleanId);
+1113:    const folders = [];
+1114:    const files = [];
+1115:    
+1116:    const subFolders = folder.getFolders();
+1117:    while (subFolders.hasNext()) {
+1118:      const sub = subFolders.next();
+1119:      folders.push({ id: sub.getId(), name: sub.getName() });
+1120:    }
+1121:    
+1122:    const folderFiles = folder.getFiles();
+1123:    while (folderFiles.hasNext()) {
+1124:      const file = folderFiles.next();
+1125:      files.push({ id: file.getId(), name: file.getName(), url: file.getUrl() });
+1126:    }
+1127:    
+1128:    return { folders, files };
+1129:  } catch (e) {
+1130:    let errorMsg = "Erro ao listar arquivos: " + String(e);
+1131:    if (String(e).includes("Access denied") || String(e).includes("No item with the given ID")) {
+1132:      if (cleanId === "1OGOxVmi2nEwI47HP9l48VdVBKQeJTVqm" || cleanId === "1RzzDCHznw97QxwDLh_qvf8NE8yKPNdWU") {
+1133:        errorMsg += " (DICA: Você está usando os IDs de pasta padrão. Por favor, configure os IDs das suas próprias pastas no aplicativo.)";
+1134:      } else {
+1135:        errorMsg += " (DICA: Verifique se o ID da pasta está correto e se a conta que está executando o script tem acesso a ela.)";
+1136:      }
+1137:    }
+1138:    throw new Error(errorMsg);
+1139:  }
+1140:}
+1141:
+1142:/**
+1143: * ============================================================
+1144: * SEÇÃO: EXPORTAÇÃO E GESTÃO DE ARQUIVOS
+1145: * ============================================================
+1146: */
+1147:
+1148:function exportarFolhasSextaFeira(paramFolderRegId, paramFolderFixoId) {
+1149:  const ss = SpreadsheetApp.getActiveSpreadsheet();
+1150:  const props = PropertiesService.getScriptProperties();
+1151:  const PASTA_REGISTRADO_ID = extractFolderId(paramFolderRegId || props.getProperty('FOLDER_REG_ID') || "1OGOxVmi2nEwI47HP9l48VdVBKQeJTVqm");
+1152:  const PASTA_FIXO_ID = extractFolderId(paramFolderFixoId || props.getProperty('FOLDER_FIXO_ID') || "1RzzDCHznw97QxwDLh_qvf8NE8yKPNdWU");
+1153:
+1154:  const hoje = new Date();
+1155:  const ano = Utilities.formatDate(hoje, Session.getScriptTimeZone(), "yyyy");
+1156:  
+1157:  // Array com nomes dos meses em português
+1158:  const meses = ["JANEIRO", "FEVEREIRO", "MARÇO", "ABRIL", "MAIO", "JUNHO", "JULHO", "AGOSTO", "SETEMBRO", "OUTUBRO", "NOVEMBRO", "DEZEMBRO"];
+1159:  const mesNome = meses[hoje.getMonth()];
+1160:  
+1161:  const dataPasta = Utilities.formatDate(hoje, Session.getScriptTimeZone(), "dd-MM");
+1162:
+1163:  function obterOuCriarSubpasta(pastaPai, nomeSubpasta) {
+1164:    const subpastas = pastaPai.getFoldersByName(nomeSubpasta);
+1165:    return subpastas.hasNext() ? subpastas.next() : pastaPai.createFolder(nomeSubpasta);
+1166:  }
+1167:
+1168:  try {
+1169:    // Para HE - REGISTRADO
+1170:    const pastaRaizReg = DriveApp.getFolderById(PASTA_REGISTRADO_ID);
+1171:    const pastaAnoReg = obterOuCriarSubpasta(pastaRaizReg, ano);
+1172:    const pastaMesReg = obterOuCriarSubpasta(pastaAnoReg, mesNome);
+1173:    const pReg = obterOuCriarSubpasta(pastaMesReg, dataPasta);
+1174:    processarExportacaoIndividual(ss, "HE - REGISTRADO", "REGISTRADO", pReg);
+1175:    
+1176:    // Para HE - FIXO
+1177:    const pastaRaizFixo = DriveApp.getFolderById(PASTA_FIXO_ID);
+1178:    const pastaAnoFixo = obterOuCriarSubpasta(pastaRaizFixo, ano);
+1179:    const pastaMesFixo = obterOuCriarSubpasta(pastaAnoFixo, mesNome);
+1180:    const pFix = obterOuCriarSubpasta(pastaMesFixo, dataPasta);
+1181:    processarExportacaoIndividual(ss, "HE - FIXO", "FIXO", pFix);
+1182:  } catch(e) { 
+1183:    console.error("Erro na exportação: " + e);
+1184:    let errorMsg = "Erro ao acessar pastas do Drive ou exportar arquivos: " + String(e);
+1185:    if (String(e).includes("Access denied") || String(e).includes("No item with the given ID")) {
+1186:      if (PASTA_REGISTRADO_ID === "1OGOxVmi2nEwI47HP9l48VdVBKQeJTVqm" || PASTA_FIXO_ID === "1RzzDCHznw97QxwDLh_qvf8NE8yKPNdWU") {
+1187:        errorMsg += " (DICA: Você está usando os IDs de pasta padrão. Por favor, configure os IDs das suas próprias pastas no aplicativo.)";
+1188:      } else {
+1189:        errorMsg += " (DICA: Verifique se os IDs das pastas estão corretos e se a conta que está executando o script tem acesso a elas.)";
+1190:      }
+1191:    }
+1192:    throw new Error(errorMsg);
+1193:  }
+1194:}
+1195:
+1196:function processarExportacaoIndividual(ss, nomeAba, tipo, pastaDestino) {
+1197:  const abaOrigem = ss.getSheetByName(nomeAba);
+1198:  if (!abaOrigem) return;
+1199:
+1200:  const dados = abaOrigem.getDataRange().getValues();
+1201:  const dataCurta = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "dd-MM");
+1202:  const saltoLinhas = (tipo === "REGISTRADO") ? 52 : 64; 
+1203:  
+1204:  let contadorNomes = {};
+1205:
+1206:  for (let i = 0; i < dados.length; i += saltoLinhas) {
+1207:    if (i >= dados.length) break;
+1208:    let nomeArquivo = "";
+1209:
+1210:    if (tipo === "FIXO") {
+1211:      // Pega o nome do setor nas primeiras linhas do bloco
+1212:      let nomeSetor = "";
+1213:      for (let s = 0; s < 5; s++) {
+1214:        if (dados[i+s] && dados[i+s][1]) {
+1215:          let val = dados[i+s][1].toString().toUpperCase().trim();
+1216:          if (val !== "" && !val.includes("NOME COMPLETO")) {
+1217:            nomeSetor = val.replace("SETOR:", "").trim();
+1218:            break;
+1219:          }
+1220:        }
+1221:      }
+1222:      if (!nomeSetor) nomeSetor = "GERAL";
+1223:
+1224:      // Verifica se há dados no bloco antes de exportar
+1225:      let temDados = false;
+1226:      for (let r = 0; r < saltoLinhas; r++) {
+1227:        if (dados[i+r] && ((dados[i+r][1] && (dados[i+r][0]||"").toString().toUpperCase().includes("NOME")) || (dados[i+r][8] && (dados[i+r][7]||"").toString().toUpperCase().includes("NOME")))) {
+1228:          temDados = true; break;
+1229:        }
+1230:      }
+1231:      if (!temDados) continue;
+1232:
+1233:      // Nome do arquivo para Fixo (Ex: GOVERNANÇA-24-02)
+1234:      if (!contadorNomes[nomeSetor]) {
+1235:        contadorNomes[nomeSetor] = 1;
+1236:        nomeArquivo = \`\${nomeSetor}-\${dataCurta}\`;
+1237:      } else {
+1238:        contadorNomes[nomeSetor]++;
+1239:        nomeArquivo = \`\${nomeSetor} (PARTE \${contadorNomes[nomeSetor]})-\${dataCurta}\`;
+1240:      }
+1241:
+1242:    } else {
+1243:      // REGISTRADO: Extrai apenas o primeiro nome (Ex: MIKAELA & VALDIRENE)
+1244:      let raw1 = (dados[i+4] && dados[i+4][1]) ? dados[i+4][1].toString().trim() : "";
+1245:      let raw2 = (dados[i+28] && dados[i+28][1]) ? dados[i+28][1].toString().trim() : "";
+1246:      
+1247:      if (raw1 === "" && raw2 === "") continue;
+1248:
+1249:      let pNome1 = raw1 !== "" ? raw1.split(" ")[0].toUpperCase() : "VAGO";
+1250:      let pNome2 = raw2 !== "" ? raw2.split(" ")[0].toUpperCase() : "VAGO";
+1251:      nomeArquivo = \`\${pNome1} & \${pNome2}\`;
+1252:
+1253:      if (!contadorNomes[nomeArquivo]) {
+1254:        contadorNomes[nomeArquivo] = 1;
+1255:      } else {
+1256:        contadorNomes[nomeArquivo]++;
+1257:        nomeArquivo += \` (\${contadorNomes[nomeArquivo]})\`;
+1258:      }
+1259:    }
+1260:
+1261:    let numCols = (tipo === "FIXO") ? 13 : 11;
+1262:    let rangeFolha = abaOrigem.getRange(i + 1, 1, saltoLinhas, numCols); 
+1263:    gerarNovoArquivoSheets(nomeArquivo, rangeFolha, pastaDestino);
+1264:  }
+1265:}
+1266:
+1267:/**
+1268: * CRIAÇÃO DE ARQUIVO COM CÓPIA DE ALTURA E LARGURA (LAYOUT SULFITE)
+1269: */
+1270:function gerarNovoArquivoSheets(nomeArquivo, rangeOrigem, pastaDestino) {
+1271:  const novoSS = SpreadsheetApp.create(nomeArquivo);
+1272:  const abaOrigem = rangeOrigem.getSheet();
+1273:  const abaCopiada = abaOrigem.copyTo(novoSS);
+1274:  abaCopiada.setName("Ficha_HE");
+1275:  
+1276:  const abas = novoSS.getSheets();
+1277:  if (abas.length > 1) novoSS.deleteSheet(abas[0]);
+1278:  
+1279:  const row = rangeOrigem.getRow();
+1280:  const col = rangeOrigem.getColumn();
+1281:  const rows = rangeOrigem.getNumRows();
+1282:  const cols = rangeOrigem.getNumColumns();
+1283:  
+1284:  const abaFinal = novoSS.insertSheet("Relatorio");
+1285:
+1286:  // 1. Copia Largura das Colunas
+1287:  for (let c = 1; c <= cols; c++) {
+1288:    abaFinal.setColumnWidth(c, abaOrigem.getColumnWidth(col + c - 1));
+1289:  }
+1290:
+1291:  // 2. Copia Altura das Linhas (Essencial para manter o Sulfite A4)
+1292:  for (let r = 1; r <= rows; r++) {
+1293:    abaFinal.setRowHeight(r, abaOrigem.getRowHeight(row + r - 1));
+1294:  }
+1295:  
+1296:  abaCopiada.getRange(row, col, rows, cols).copyTo(abaFinal.getRange(1, 1));
+1297:  novoSS.deleteSheet(abaCopiada);
+1298:  
+1299:  SpreadsheetApp.flush();
+1300:  
+1301:  let arquivo = DriveApp.getFileById(novoSS.getId());
+1302:  arquivo.moveTo(pastaDestino);
+1303:}
+1304:
+1305:/**
+1306: * ============================================================
+1307: * SEÇÃO: LÓGICA DE SINCRONIZAÇÃO E APOIO
+1308: * ============================================================
+1309: */
+1310:
+1311:function agruparSolicitacoesPorFuncionario(requests) {
+1312:  const agrupado = {};
+1313:  requests.forEach(req => {
+1314:    const key = (req.employeeName || "").trim().toUpperCase() + "|" + 
+1315:                (req.employeeType || "").trim().toUpperCase() + "|" + 
+1316:                (req.sectorName || "").trim().toUpperCase();
+1317:    if (!agrupado[key]) {
+1318:      agrupado[key] = {
+1319:        employeeName: req.employeeName,
+1320:        employeeType: req.employeeType,
+1321:        sectorName: req.sectorName,
+1322:        records: []
+1323:      };
+1324:    }
+1325:    let recs = typeof req.records === 'string' ? JSON.parse(req.records) : req.records;
+1326:    agrupado[key].records = agrupado[key].records.concat(recs);
+1327:  });
+1328:
+1329:  const resultado = [];
+1330:
+1331:  Object.keys(agrupado).forEach(key => {
+1332:    let grupo = agrupado[key];
+1333:    let records = grupo.records;
+1334:    
+1335:    // Remove registros vazios e ordena por data
+1336:    records = records.filter(d => d.realEntry || d.realExit || d.punchEntry || d.punchExit);
+1337:    records.sort((a, b) => (a.date > b.date) ? 1 : -1);
+1338:
+1339:    // Agrupar por semana (Segunda a Domingo) para TODOS
+1340:    const semanas = {};
+1341:    records.forEach(rec => {
+1342:      let partes = rec.date.split("-");
+1343:      let d = new Date(partes[0], partes[1] - 1, partes[2], 12, 0, 0);
+1344:      let diaSemana = d.getDay();
+1345:      let diffParaSegunda = diaSemana === 0 ? -6 : 1 - diaSemana;
+1346:      let segunda = new Date(d);
+1347:      segunda.setDate(d.getDate() + diffParaSegunda);
+1348:      let keySemana = segunda.getFullYear() + "-" + (segunda.getMonth() + 1) + "-" + segunda.getDate();
+1349:      
+1350:      if (!semanas[keySemana]) semanas[keySemana] = [];
+1351:      
+1352:      // Evitar duplicatas exatas de data na mesma semana (mantém o mais recente)
+1353:      let idx = semanas[keySemana].findIndex(r => r.date === rec.date);
+1354:      if (idx !== -1) {
+1355:        semanas[keySemana][idx] = rec;
+1356:      } else {
+1357:        semanas[keySemana].push(rec);
+1358:      }
+1359:    });
+1360:    
+1361:    Object.keys(semanas).forEach(keySemana => {
+1362:      let recsSemana = semanas[keySemana];
+1363:      if ((grupo.employeeType || "").toUpperCase().trim() === "REGISTRADO") {
+1364:        resultado.push({
+1365:          employeeName: grupo.employeeName,
+1366:          employeeType: grupo.employeeType,
+1367:          sectorName: grupo.sectorName,
+1368:          records: recsSemana
+1369:        });
+1370:      } else {
+1371:        // FIXO: Agrupar a cada 7 registros (limite da ficha) dentro da mesma semana
+1372:        for (let i = 0; i < recsSemana.length; i += 7) {
+1373:          resultado.push({
+1374:            employeeName: grupo.employeeName,
+1375:            employeeType: grupo.employeeType,
+1376:            sectorName: grupo.sectorName,
+1377:            records: recsSemana.slice(i, i + 7)
+1378:          });
+1379:        }
+1380:      }
+1381:    });
+1382:  });
+1383:
+1384:  return resultado;
+1385:}
+1386:
+1387:function processarHEsAprovadas(ss, requests) {
+1388:  const aprovados = requests.filter(r => (r.status || "").toUpperCase().trim() === "APROVADO");
+1389:  const agrupados = agruparSolicitacoesPorFuncionario(aprovados);
+1390:
+1391:  const abaReg = ss.getSheetByName("HE - REGISTRADO");
+1392:  if (abaReg) {
+1393:    let range = abaReg.getDataRange();
+1394:    let matriz = range.getValues();
+1395:    let formulas = range.getFormulas(); 
+1396:    limparMatriz(matriz, "REGISTRADO");
+1397:    
+1398:    agrupados.filter(r => r.employeeType.toUpperCase().trim() === "REGISTRADO").forEach(req => {
+1399:      let rIdx = localizarFichaVaziaNaMatriz(matriz, 0, 1);
+1400:      if (rIdx !== -1) {
+1401:        matriz[rIdx][1] = req.employeeName;
+1402:        if (matriz[rIdx - 3]) matriz[rIdx - 3][1] = req.sectorName;
+1403:        preencherColunaAERegistros(matriz, formulas, rIdx + 7, req.records);
+1404:      }
+1405:    });
+1406:    restaurarFormulas(matriz, formulas); 
+1407:    abaReg.getRange(1, 1, matriz.length, matriz[0].length).setValues(matriz);
+1408:  }
+1409:
+1410:  const abaFixo = ss.getSheetByName("HE - FIXO");
+1411:  if (abaFixo) {
+1412:    let range = abaFixo.getDataRange();
+1413:    let matriz = range.getValues();
+1414:    let formulas = range.getFormulas(); 
+1415:    limparMatriz(matriz, "FIXO");
+1416:    
+1417:    agrupados.filter(r => r.employeeType.toUpperCase().trim() === "FIXO").forEach(func => {
+1418:      let fIdx = -1; let colBase = -1; 
+1419:      let nomeSetorAlvo = (func.sectorName || "").toUpperCase().trim();
+1420:      for (let i = 0; i < matriz.length; i++) {
+1421:        if ((matriz[i][1] || "").toString().toUpperCase().trim() === nomeSetorAlvo) {
+1422:          let buscaEsq = localizarVagaNoBlocoSetor(matriz, i, 0);
+1423:          if (buscaEsq !== -1) { fIdx = buscaEsq; colBase = 0; break; }
+1424:          let buscaDir = localizarVagaNoBlocoSetor(matriz, i, 7);
+1425:          if (buscaDir !== -1) { fIdx = buscaDir; colBase = 7; break; }
+1426:        }
+1427:      }
+1428:      if (fIdx !== -1) {
+1429:        matriz[fIdx][colBase + 1] = func.employeeName;
+1430:        preencherHorasNaMatriz(matriz, formulas, fIdx + 3, func.records, colBase);
+1431:      }
+1432:    });
+1433:    restaurarFormulas(matriz, formulas);
+1434:    abaFixo.getRange(1, 1, matriz.length, matriz[0].length).setValues(matriz);
+1435:  }
+1436:}
+1437:
+1438:function limparMatriz(matriz, tipo) {
+1439:  for (let i = 0; i < matriz.length; i++) {
+1440:    if (i === 13 || i === 14) continue; 
+1441:    let txtA = (matriz[i] && matriz[i][0]) ? matriz[i][0].toString().toUpperCase() : "";
+1442:    if (txtA.includes("NOME COMPLETO:")) {
+1443:      matriz[i][1] = ""; 
+1444:      let start = (tipo === "REGISTRADO") ? 7 : 3;
+1445:      let limit = (tipo === "REGISTRADO") ? 8 : 7;
+1446:      for (let g = 0; g < limit; g++) {
+1447:        let rIdx = i + start + g;
+1448:        if (matriz[rIdx]) {
+1449:          if (tipo === "REGISTRADO") [0, 2, 3, 6, 7].forEach(c => matriz[rIdx][c] = ""); 
+1450:          else [0, 1, 2, 4].forEach(c => matriz[rIdx][c] = ""); 
+1451:        }
+1452:      }
+1453:    }
+1454:    if (tipo === "FIXO" && matriz[i] && matriz[i][7] && matriz[i][7].toString().toUpperCase().includes("NOME COMPLETO:")) {
+1455:      matriz[i][8] = ""; 
+1456:      for (let g = 0; g < 7; g++) {
+1457:        let rIdx = i + 3 + g;
+1458:        if (matriz[rIdx]) [7, 8, 9, 11].forEach(c => matriz[rIdx][c] = "");
+1459:      }
+1460:    }
+1461:  }
+1462:}
+1463:
+1464:function getSheetData(ss, sheetName) {
+1465:  const sheet = ss.getSheetByName(sheetName);
+1466:  if (!sheet) return [];
+1467:  const values = sheet.getDataRange().getValues();
+1468:  if (values.length <= 1) return [];
+1469:  const headers = values[0];
+1470:  return values.slice(1).map(row => {
+1471:    let obj = {};
+1472:    headers.forEach((h, i) => {
+1473:      let val = row[i];
+1474:      if (typeof val === 'string' && (val.startsWith('[') || val.startsWith('{'))) {
+1475:        try { val = JSON.parse(val); } catch(e) {}
+1476:      }
+1477:      obj[h] = val;
+1478:    });
+1479:    return obj;
+1480:  });
+1481:}
+1482:
+1483:function parseRecords(recs) {
+1484:  if (typeof recs === 'string') { try { return JSON.parse(recs); } catch(e) { return []; } }
+1485:  return Array.isArray(recs) ? recs : [];
+1486:}
+1487:
+1488:function preencherHorasNaMatriz(matriz, formulas, linhaInicio, records, col) {
+1489:  let horas = parseRecords(records);
+1490:  horas.sort((a, b) => (a.date > b.date) ? 1 : -1);
+1491:  let preenchidas = 0;
+1492:  let diasComDados = horas.filter(d => d.realEntry || d.realExit);
+1493:  for (let i = 0; i < diasComDados.length; i++) {
+1494:    if (preenchidas < 7) {
+1495:      let r = linhaInicio + preenchidas;
+1496:      if (matriz[r]) {
+1497:        matriz[r][col + 1] = diasComDados[i].realEntry || "";
+1498:        matriz[r][col + 2] = diasComDados[i].realExit || "";  
+1499:        let lE = (col === 0) ? "B" : "I"; let lS = (col === 0) ? "C" : "J";
+1500:        formulas[r][col + 4] = \`=\${lS}\${r+1}-\${lE}\${r+1}\`;
+1501:        preenchidas++;
+1502:      }
+1503:    }
+1504:  }
+1505:}
+1506:
+1507:function preencherColunaAERegistros(matriz, formulas, linhaInicio, records) {
+1508:  let horas = parseRecords(records);
+1509:  if (horas.length === 0) return;
+1510:  horas.sort((a, b) => (a.date > b.date) ? 1 : -1);
+1511:  let partesData = horas[0].date.split("-"); 
+1512:  let dataRefOriginal = new Date(partesData[0], partesData[1] - 1, partesData[2], 12, 0, 0);
+1513:  let diaSemana = dataRefOriginal.getDay();
+1514:  let diffParaSegunda = diaSemana === 0 ? -6 : 1 - diaSemana;
+1515:  let dataRef = new Date(dataRefOriginal);
+1516:  dataRef.setDate(dataRefOriginal.getDate() + diffParaSegunda);
+1517:  
+1518:  for (let i = 0; i < 7; i++) {
+1519:    let r = linhaInicio + i;
+1520:    if (!matriz[r]) continue;
+1521:    let dataLoop = new Date(dataRef);
+1522:    dataLoop.setDate(dataRef.getDate() + i);
+1523:    
+1524:    let sBusca = Utilities.formatDate(dataLoop, Session.getScriptTimeZone(), "yyyy-MM-dd");
+1525:    let reg = horas.find(h => h.date === sBusca);
+1526:    if (reg) {
+1527:      matriz[r][2] = reg.realEntry || ""; matriz[r][3] = reg.punchEntry || "";
+1528:      matriz[r][6] = reg.punchExit || ""; matriz[r][7] = reg.realExit || "";
+1529:    }
+1530:  }
+1531:}
+1532:
+1533:function restaurarFormulas(matriz, formulas) {
+1534:  for (let i = 0; i < formulas.length; i++) {
+1535:    for (let j = 0; j < formulas[i].length; j++) {
+1536:      if (formulas[i][j] && formulas[i][j].toString().startsWith("=")) {
+1537:        if (!(matriz[i][j] && matriz[i][j].toString().startsWith("="))) matriz[i][j] = formulas[i][j];
+1538:      }
+1539:    }
+1540:  }
+1541:}
+1542:
+1543:function localizarFichaVaziaNaMatriz(matriz, colLabel, colNome) {
+1544:  for (let i = 0; i < matriz.length; i++) {
+1545:    if (matriz[i] && (matriz[i][colLabel] || "").toString().toUpperCase().includes("NOME COMPLETO:")) {
+1546:      if (!matriz[i][colNome] || (matriz[i][colNome] || "").toString().trim() === "") return i;
+1547:    }
+1548:  }
+1549:  return -1;
+1550:}
+1551:
+1552:function localizarVagaNoBlocoSetor(matriz, linhaSetor, col) {
+1553:  let contador = 0;
+1554:  for (let i = linhaSetor; i < matriz.length; i++) {
+1555:    let txt = (matriz[i] && matriz[i][col]) ? matriz[i][col].toString().toUpperCase() : "";
+1556:    if (txt.includes("NOME COMPLETO:")) {
+1557:      if ((matriz[i][col + 1] || "").toString().trim() === "") return i;
+1558:      contador++;
+1559:      if (contador >= 5) break; 
+1560:    }
+1561:    if (i > linhaSetor && matriz[i] && (matriz[i][1] || "").toString().toUpperCase().includes("SETOR:")) break;
+1562:  }
+1563:  return -1;
+1564:}
+1565:
+1566:function configuringGatilhoEdicao() {
+1567:  const ss = SpreadsheetApp.getActiveSpreadsheet();
+1568:  const triggers = ScriptApp.getProjectTriggers();
+1569:  triggers.forEach(t => { if (t.getHandlerFunction() === 'aoEditar') ScriptApp.deleteTrigger(t); });
+1570:  ScriptApp.newTrigger('aoEditar').forSpreadsheet(ss).onEdit().create();
+1571:  SpreadsheetApp.getUi().alert("Automação Ativada!");
+1572:}
+1573:
+1574:function aoEditar(e) {
+1575:  const nomeAbaAlvo = "Solicitacoes";
+1576:  if (e.source.getActiveSheet().getName() === nomeAbaAlvo) {
+1577:    processarHEsAprovadas(e.source, getSheetData(e.source, nomeAbaAlvo));
+1578:  }
+1579:}
+1580:
+1581:function testeManual() {
+1582:  const ss = SpreadsheetApp.getActiveSpreadsheet();
+1583:  const requests = getSheetData(ss, "Solicitacoes"); 
+1584:  if (requests.length > 0) {
+1585:    processarHEsAprovadas(ss, requests);
+1586:    SpreadsheetApp.getUi().alert("Sincronização concluída!");
+1587:  }
+1588:}
+1589:
+1590:`
+1591:
+1592:  return (
+1593:    <div className="min-h-screen bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 transition-colors duration-200">
+1594:      <button 
+1595:        onClick={() => setIsDarkMode(!isDarkMode)} 
+1596:        className="fixed top-4 right-4 p-3 rounded-full bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-200 shadow-lg hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors z-50 border border-gray-200 dark:border-gray-700"
+1597:        title="Alternar Tema"
+1598:      >
+1599:        {isDarkMode ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
+1600:      </button>
+1601:
+1602:      {state.view === 'HOME' && (
+1603:        <div className="flex flex-col items-center justify-center min-h-[80vh] text-center px-4">
+1604:          <div className="bg-white dark:bg-gray-800 p-8 md:p-12 rounded-3xl shadow-2xl max-w-lg w-full transform transition hover:scale-105 duration-300 border border-transparent dark:border-gray-700">
+1605:            <div className="bg-blue-600 w-16 h-16 md:w-20 md:h-20 rounded-2xl flex items-center justify-center mx-auto mb-8 shadow-lg shadow-blue-200 dark:shadow-none"><ClipboardList className="text-white w-8 h-8 md:w-10 md:h-10" /></div>
+1606:            <h1 className="text-3xl md:text-4xl font-extrabold text-gray-800 dark:text-white mb-4">Controle de Horas</h1>
+1607:            <p className="text-gray-500 dark:text-gray-400 mb-10 text-base md:text-lg">Gerenciamento eficiente de jornadas semanais.</p>
+1608:            <button onClick={() => setState(prev => ({ ...prev, view: 'SELECTION' }))} className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-4 px-8 rounded-xl transition shadow-xl shadow-blue-100 dark:shadow-none flex items-center justify-center gap-3 group text-lg">
+1609:              Começar <Play className="w-5 h-5 group-hover:translate-x-1 transition" />
+1610:            </button>
+1611:            <div className="mt-8 pt-8 border-t border-gray-100 dark:border-gray-700 relative">
+1612:              <input type="password" placeholder="Acesso Admin" className="w-full pl-12 pr-4 py-4 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl outline-none text-black dark:text-white focus:bg-white dark:focus:bg-gray-800 focus:border-blue-500 transition text-base" value={adminPassword} onChange={(e) => setAdminPassword(e.target.value)} onKeyPress={(e) => e.key === 'Enter' && handleAdminLogin()} />
+1613:              <Settings className="absolute left-4 top-[70%] -translate-y-1/2 text-gray-400 dark:text-gray-500 w-5 h-5" />
+1614:            </div>
+1615:          </div>
+1616:        </div>
+1617:      )}
+1618:
+1619:      {state.view === 'SELECTION' && (
+1620:        <div className="flex flex-col items-center justify-center min-h-[80vh] px-4">
+1621:          <button onClick={() => setState(prev => ({ ...prev, view: 'HOME' }))} className="mb-8 flex items-center gap-2 text-gray-500 dark:text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 transition font-medium p-2"><ArrowLeft className="w-5 h-5" /> Voltar</button>
+1622:          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 md:gap-8 max-w-4xl w-full">
+1623:            <button onClick={() => setState(prev => ({ ...prev, view: 'FLOW', flowType: EmployeeType.REGISTRADO }))} className="bg-white dark:bg-gray-800 p-8 md:p-10 rounded-3xl shadow-xl hover:border-blue-500 dark:hover:border-blue-400 border-2 border-transparent dark:border-gray-700 transition-all group text-left flex flex-row md:flex-col items-center md:items-start gap-6 md:gap-0">
+1624:              <div className="bg-blue-50 dark:bg-blue-900/30 w-14 h-14 md:w-16 md:h-16 rounded-2xl flex items-center justify-center md:mb-6 group-hover:bg-blue-600 transition shrink-0"><Users className="text-blue-600 dark:text-blue-400 w-7 h-7 md:w-8 md:h-8 group-hover:text-white transition" /></div>
+1625:              <h2 className="text-xl md:text-2xl font-bold dark:text-white">Registrado</h2>
+1626:            </button>
+1627:            <button onClick={() => setState(prev => ({ ...prev, view: 'FLOW', flowType: EmployeeType.FIXO }))} className="bg-white dark:bg-gray-800 p-8 md:p-10 rounded-3xl shadow-xl hover:border-green-500 dark:hover:border-green-400 border-2 border-transparent dark:border-gray-700 transition-all group text-left flex flex-row md:flex-col items-center md:items-start gap-6 md:gap-0">
+1628:              <div className="bg-green-50 dark:bg-green-900/30 w-14 h-14 md:w-16 md:h-16 rounded-2xl flex items-center justify-center md:mb-6 group-hover:bg-green-600 transition shrink-0"><MapPin className="text-green-600 dark:text-green-400 w-7 h-7 md:w-8 md:h-8 group-hover:text-white transition" /></div>
+1629:              <h2 className="text-xl md:text-2xl font-bold dark:text-white">Fixo</h2>
+1630:            </button>
+1631:          </div>
+1632:        </div>
+1633:      )}
+1634:
+1635:      {state.view === 'FLOW' && (
+1636:        <div className="max-w-xl mx-auto py-8 px-4">
+1637:          <button onClick={() => setState(prev => ({ ...prev, view: 'SELECTION' }))} className="mb-6 flex items-center gap-2 text-gray-500 dark:text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 transition font-medium p-2"><ArrowLeft className="w-5 h-5" /> Voltar</button>
+1638:          <div className="bg-white dark:bg-gray-800 rounded-3xl shadow-xl p-6 md:p-8 space-y-6 md:space-y-8 border border-transparent dark:border-gray-700">
+1639:            <h2 className="text-2xl font-bold text-gray-800 dark:text-white border-b dark:border-gray-700 pb-4">{state.flowType}</h2>
+1640:            <div>
+1641:              <label className="block text-sm font-semibold mb-2 dark:text-gray-300">Setor</label>
+1642:              <select className="w-full p-4 border dark:border-gray-600 rounded-xl bg-gray-50 dark:bg-gray-900 text-black dark:text-white text-base focus:bg-white dark:focus:bg-gray-800 focus:border-blue-500 transition" value={selectedSector} onChange={(e) => setSelectedSector(e.target.value)}>
+1643:                <option value="">Selecione...</option>
+1644:                {sectors.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+1645:              </select>
+1646:            </div>
+1647:            {selectedSector && (
+1648:              <div>
+1649:                <label className="block text-sm font-semibold mb-2 dark:text-gray-300">Funcionário</label>
+1650:                {state.flowType === EmployeeType.REGISTRADO ? (
+1651:                  <select className="w-full p-4 border dark:border-gray-600 rounded-xl bg-gray-50 dark:bg-gray-900 text-black dark:text-white text-base focus:bg-white dark:focus:bg-gray-800 focus:border-blue-500 transition" value={selectedEmployee} onChange={(e) => setSelectedEmployee(e.target.value)}>
+1652:                    <option value="">Selecione...</option>
+1653:                    {employees.filter(e => String(e.sectorId) === String(selectedSector) && e.type === state.flowType).map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
+1654:                  </select>
+1655:                ) : (
+1656:                  <input type="text" placeholder="Nome" className="w-full p-4 border dark:border-gray-600 rounded-xl bg-gray-50 dark:bg-gray-900 text-black dark:text-white text-base focus:bg-white dark:focus:bg-gray-800 focus:border-blue-500 transition" value={selectedEmployee} onChange={(e) => setSelectedEmployee(e.target.value)} />
+1657:                )}
+1658:              </div>
+1659:            )}
+1660:            <button disabled={!selectedSector || !selectedEmployee} onClick={() => setShowFormModal(true)} className="w-full bg-blue-600 disabled:bg-gray-300 dark:disabled:bg-gray-700 dark:disabled:text-gray-500 text-white font-bold py-4 rounded-xl shadow-lg active:scale-95 transition text-lg">Lançar Horários</button>
+1661:          </div>
+1662:        </div>
+1663:      )}
+1664:
+1665:      {state.view === 'SUCCESS' && (
+1666:        <div className="flex flex-col items-center justify-center min-h-[80vh] text-center px-4">
+1667:          <div className="bg-white dark:bg-gray-800 p-8 md:p-12 rounded-3xl shadow-2xl max-w-lg w-full transform transition hover:scale-105 duration-300 border border-transparent dark:border-gray-700">
+1668:            <div className="bg-green-100 dark:bg-green-900/30 w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-8 shadow-lg shadow-green-100 dark:shadow-none">
+1669:              <CheckCircle className="text-green-600 dark:text-green-400 w-10 h-10" />
+1670:            </div>
+1671:            <h1 className="text-3xl md:text-4xl font-extrabold text-gray-800 dark:text-white mb-4">Ok, registrado!</h1>
+1672:            <p className="text-gray-500 dark:text-gray-400 mb-10 text-base md:text-lg">Muito obrigado pelo preenchimento.</p>
+1673:            <button 
+1674:              onClick={() => setState(prev => ({ ...prev, view: 'HOME' }))} 
+1675:              className="w-full bg-gray-800 dark:bg-gray-700 hover:bg-gray-900 dark:hover:bg-gray-600 text-white font-bold py-4 px-8 rounded-xl transition shadow-xl flex items-center justify-center gap-3 text-lg"
+1676:            >
+1677:              Sair
+1678:            </button>
+1679:          </div>
+1680:        </div>
+1681:      )}
+1682:
+1683:      {state.view === 'ADMIN' && (
+1684:        <div className="flex flex-col md:flex-row h-screen bg-gray-50 dark:bg-gray-900 overflow-hidden">
+1685:          {/* Desktop Sidebar */}
+1686:          <div className="hidden md:flex w-72 bg-white dark:bg-gray-800 border-r border-gray-100 dark:border-gray-700 flex-col p-6 shadow-sm z-20">
+1687:            <div className="flex items-center gap-3 mb-12"><div className="bg-blue-600 p-2 rounded-lg text-white"><Settings className="w-5 h-5" /></div><h2 className="text-xl font-black dark:text-white">Admin</h2></div>
+1688:            <nav className="flex-1 space-y-2">
+1689:              {navItems.map(item => (
+1690:                <button key={item.id} onClick={() => setState(prev => ({ ...prev, adminSubView: item.id as any }))} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl font-bold transition-all ${state.adminSubView === item.id ? 'bg-blue-600 text-white shadow-lg' : 'text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700'}`}>
+1691:                  <item.icon className="w-5 h-5" />{item.label}
+1692:                </button>
+1693:              ))}
+1694:            </nav>
+1695:            <button onClick={() => { setIsAuth(false); setState(prev => ({ ...prev, view: 'HOME' })) }} className="flex items-center gap-3 px-4 py-3 text-red-500 font-bold hover:bg-red-50 dark:hover:bg-red-900/20 rounded-xl transition mt-auto"><LogOut className="w-5 h-5" /> Sair</button>
+1696:          </div>
+1697:
+1698:          {/* Mobile Bottom Nav */}
+1699:          <div className="md:hidden fixed bottom-0 left-0 right-0 bg-white dark:bg-gray-800 border-t border-gray-200 dark:border-gray-700 flex justify-around p-2 z-50 safe-area-bottom">
+1700:            {navItems.map(item => (
+1701:                <button key={item.id} onClick={() => setState(prev => ({ ...prev, adminSubView: item.id as any }))} className={`flex flex-col items-center justify-center p-2 rounded-xl transition-all ${state.adminSubView === item.id ? 'text-blue-600 dark:text-blue-400' : 'text-gray-400 dark:text-gray-500'}`}>
+1702:                    <item.icon className={`w-6 h-6 mb-1 ${state.adminSubView === item.id ? 'fill-current' : ''}`} />
+1703:                    <span className="text-[10px] font-bold">{item.label}</span>
+1704:                </button>
+1705:            ))}
+1706:            <button onClick={() => { setIsAuth(false); setState(prev => ({ ...prev, view: 'HOME' })) }} className="flex flex-col items-center justify-center p-2 text-red-400 dark:text-red-500">
+1707:                <LogOut className="w-6 h-6 mb-1" />
+1708:                <span className="text-[10px] font-bold">Sair</span>
+1709:            </button>
+1710:          </div>
+1711:
+1712:          {/* Main Content */}
+1713:          <div className="flex-1 overflow-y-auto p-4 md:p-10 relative pb-24 md:pb-10 bg-gray-50 dark:bg-gray-900">
+1714:            {isSyncing && <div className="absolute top-4 right-4 md:top-10 md:right-10 flex items-center gap-2 text-blue-600 dark:text-blue-400 font-bold text-xs md:text-sm bg-blue-50 dark:bg-blue-900/30 px-3 py-1 md:px-4 md:py-2 rounded-full border border-blue-100 dark:border-blue-800 z-10"><RefreshCw className="w-3 h-3 md:w-4 md:h-4 animate-spin" /> Atualizando...</div>}
+1715:            
+1716:            {state.adminSubView === 'DASHBOARD' && (
+1717:              <div className="space-y-6 md:space-y-8">
+1718:                {/* Cards de Resumo */}
+1719:                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 md:gap-6">
+1720:                  {[
+1721:                      { label: 'Total Gasto', val: formatCurrency(dashboardData.totalSpent), icon: DollarSign, color: 'text-gray-800 dark:text-gray-100' },
+1722:                      { label: 'Aprovadas', val: dashboardData.approvedCount, icon: CheckCircle, color: 'text-green-600 dark:text-green-400' },
+1723:                      { label: 'Pendentes', val: requests.filter(r => r.status === RequestStatus.PENDENTE).length, icon: Clock, color: 'text-blue-600 dark:text-blue-400' },
+1724:                      { label: 'Ticket Médio', val: dashboardData.approvedCount > 0 ? formatCurrency(dashboardData.totalSpent / dashboardData.approvedCount) : 'R$ 0,00', icon: TrendingUp, color: 'text-purple-600 dark:text-purple-400' }
+1725:                  ].map((stat, i) => (
+1726:                      <div key={i} className="bg-white dark:bg-gray-800 p-5 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700">
+1727:                        <div className="flex items-center gap-2 text-gray-400 dark:text-gray-500 mb-2">
+1728:                            <stat.icon className="w-4 h-4" />
+1729:                            <span className="text-xs font-bold uppercase">{stat.label}</span>
+1730:                        </div>
+1731:                        <h3 className={`text-2xl font-black ${stat.color}`}>{stat.val}</h3>
+1732:                      </div>
+1733:                  ))}
+1734:                </div>
+1735:
+1736:                {/* Gráficos */}
+1737:                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+1738:                    <div className="bg-white dark:bg-gray-800 p-6 md:p-8 rounded-3xl border border-gray-100 dark:border-gray-700 shadow-sm flex flex-col min-h-[400px]">
+1739:                        <h3 className="text-lg font-bold text-gray-800 dark:text-white mb-6 flex items-center gap-2">
+1740:                            <MapPin className="w-5 h-5 text-blue-600 dark:text-blue-400" />
+1741:                            Gastos por Setor
+1742:                        </h3>
+1743:                        <div className="flex-1">
+1744:                            {dashboardData.expensesBySector.length > 0 ? (
+1745:                                <ResponsiveContainer width="100%" height="100%">
+1746:                                    <BarChart data={dashboardData.expensesBySector} layout="vertical" margin={{ top: 5, right: 30, left: 10, bottom: 5 }}>
+1747:                                        <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke={isDarkMode ? '#374151' : '#e5e7eb'} />
+1748:                                        <XAxis type="number" hide />
+1749:                                        <YAxis dataKey="name" type="category" width={80} tick={{fontSize: 10, fill: isDarkMode ? '#9ca3af' : '#6b7280'}} />
+1750:                                        <Tooltip cursor={{fill: isDarkMode ? '#374151' : '#f3f4f6'}} contentStyle={{ backgroundColor: isDarkMode ? '#1f2937' : '#fff', borderColor: isDarkMode ? '#374151' : '#e5e7eb', color: isDarkMode ? '#f3f4f6' : '#111827' }} />
+1751:                                        <Bar dataKey="value" fill="#3b82f6" radius={[0, 4, 4, 0]} barSize={24}>
+1752:                                            {dashboardData.expensesBySector.map((entry, index) => (
+1753:                                                <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+1754:                                            ))}
+1755:                                        </Bar>
+1756:                                    </BarChart>
+1757:                                </ResponsiveContainer>
+1758:                            ) : (
+1759:                                <div className="h-full flex flex-col items-center justify-center text-gray-300 dark:text-gray-600"><AlertCircle className="w-10 h-10 mb-2" /><p className="text-sm">Sem dados</p></div>
+1760:                            )}
+1761:                        </div>
+1762:                    </div>
+1763:
+1764:                    <div className="bg-white dark:bg-gray-800 p-6 md:p-8 rounded-3xl border border-gray-100 dark:border-gray-700 shadow-sm flex flex-col min-h-[400px]">
+1765:                        <h3 className="text-lg font-bold text-gray-800 dark:text-white mb-6 flex items-center gap-2">
+1766:                            <Users className="w-5 h-5 text-green-600 dark:text-green-400" />
+1767:                            Registrado vs Fixo
+1768:                        </h3>
+1769:                        <div className="flex-1">
+1770:                            {dashboardData.expensesByType.length > 0 ? (
+1771:                                <ResponsiveContainer width="100%" height="100%">
+1772:                                    <PieChart>
+1773:                                        <Pie data={dashboardData.expensesByType} cx="50%" cy="50%" innerRadius={60} outerRadius={100} paddingAngle={5} dataKey="value">
+1774:                                            {dashboardData.expensesByType.map((entry, index) => <Cell key={`cell-${index}`} fill={entry.color} />)}
+1775:                                        </Pie>
+1776:                                        <Tooltip contentStyle={{ backgroundColor: isDarkMode ? '#1f2937' : '#fff', borderColor: isDarkMode ? '#374151' : '#e5e7eb', color: isDarkMode ? '#f3f4f6' : '#111827' }} />
+1777:                                        <Legend verticalAlign="bottom" height={36} iconType="circle" wrapperStyle={{ color: isDarkMode ? '#f3f4f6' : '#111827' }} />
+1778:                                    </PieChart>
+1779:                                </ResponsiveContainer>
+1780:                            ) : (
+1781:                                <div className="h-full flex flex-col items-center justify-center text-gray-300 dark:text-gray-600"><AlertCircle className="w-10 h-10 mb-2" /><p className="text-sm">Sem dados</p></div>
+1782:                            )}
+1783:                        </div>
+1784:                    </div>
+1785:                </div>
+1786:              </div>
+1787:            )}
+1788:
+1789:            {state.adminSubView === 'REQUESTS' && renderAdminRequestsSubView()}
+1790:
+1791:            {state.adminSubView === 'SECTORS' && (
+1792:              <div className="bg-white dark:bg-gray-800 p-6 md:p-8 rounded-3xl border border-gray-100 dark:border-gray-700 space-y-8">
+1793:                <h2 className="text-2xl font-bold dark:text-white">Setores</h2>
+1794:                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 bg-gray-50 dark:bg-gray-900 p-6 rounded-2xl">
+1795:                  <input type="text" placeholder="Nome" className="p-4 border dark:border-gray-700 rounded-xl bg-white dark:bg-gray-800 text-black dark:text-white text-base focus:border-blue-500 outline-none" value={newSec.name} onChange={(e) => setNewSec({ ...newSec, name: e.target.value })} />
+1796:                  <input type="number" placeholder="Valor Hora" className="p-4 border dark:border-gray-700 rounded-xl bg-white dark:bg-gray-800 text-black dark:text-white text-base focus:border-blue-500 outline-none" value={newSec.fixedRate || ''} onChange={(e) => setNewSec({ ...newSec, fixedRate: parseFloat(e.target.value) })} />
+1797:                  <button onClick={() => { if(newSec.name) { setSectors([...sectors, {...newSec, id: Math.random().toString(36).substr(2, 9)}]); setNewSec({name: '', fixedRate: 0}); } }} className="bg-blue-600 text-white font-bold rounded-xl py-3 active:scale-95 transition">Adicionar</button>
+1798:                </div>
+1799:                {/* Responsive List: Card on Mobile, Table on Desktop */}
+1800:                <div className="hidden md:block">
+1801:                    <table className="w-full text-left"><thead><tr className="text-gray-400 dark:text-gray-500 text-xs border-b dark:border-gray-700"><th className="py-4">Setor</th><th className="py-4">Valor Hora</th><th className="py-4 text-right">Ação</th></tr></thead><tbody>{sectors.map(s => (<tr key={s.id} className="border-b dark:border-gray-700"><td className="py-4 font-semibold dark:text-gray-200">{s.name}</td><td className="py-4 dark:text-gray-300">{formatCurrency(s.fixedRate)}</td><td className="py-4 text-right"><button onClick={() => setSectors(sectors.filter(sec => sec.id !== s.id))} className="text-red-500 hover:text-red-400"><XCircle className="w-5 h-4" /></button></td></tr>))}</tbody></table>
+1802:                </div>
+1803:                <div className="md:hidden space-y-3">
+1804:                    {sectors.map(s => (
+1805:                        <div key={s.id} className="bg-gray-50 dark:bg-gray-900 p-4 rounded-xl flex justify-between items-center border border-gray-100 dark:border-gray-700">
+1806:                            <div>
+1807:                                <h4 className="font-bold text-gray-800 dark:text-gray-200">{s.name}</h4>
+1808:                                <p className="text-sm text-gray-500 dark:text-gray-400">{formatCurrency(s.fixedRate)} / hora</p>
+1809:                            </div>
+1810:                            <button onClick={() => setSectors(sectors.filter(sec => sec.id !== s.id))} className="text-red-500 hover:text-red-400 p-2"><XCircle className="w-6 h-6" /></button>
+1811:                        </div>
+1812:                    ))}
+1813:                </div>
+1814:              </div>
+1815:            )}
+1816:
+1817:            {state.adminSubView === 'EMPLOYEES' && (
+1818:              <div className="bg-white dark:bg-gray-800 p-6 md:p-8 rounded-3xl border border-gray-100 dark:border-gray-700 space-y-8">
+1819:                <h2 className="text-2xl font-bold dark:text-white">Funcionários</h2>
+1820:                <div className="grid grid-cols-1 md:grid-cols-5 gap-4 bg-gray-50 dark:bg-gray-900 p-6 rounded-2xl">
+1821:                  <input type="text" placeholder="Nome" className="p-4 border dark:border-gray-700 rounded-xl bg-white dark:bg-gray-800 text-black dark:text-white text-base focus:border-blue-500 outline-none" value={newEmpData.name} onChange={(e) => setNewEmpData({ ...newEmpData, name: e.target.value })} />
+1822:                  <select className="p-4 border dark:border-gray-700 rounded-xl bg-white dark:bg-gray-800 text-black dark:text-white text-base focus:border-blue-500 outline-none" value={newEmpData.sectorId} onChange={(e) => setNewEmpData({ ...newEmpData, sectorId: e.target.value })}><option value="">Setor...</option>{sectors.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}</select>
+1823:                  <input type="number" placeholder="Salário" className="p-4 border dark:border-gray-700 rounded-xl bg-white dark:bg-gray-800 text-black dark:text-white text-base focus:border-blue-500 outline-none" value={newEmpData.salary || ''} onChange={(e) => setNewEmpData({ ...newEmpData, salary: parseFloat(e.target.value) })} />
+1824:                  <input type="number" placeholder="Horas" className="p-4 border dark:border-gray-700 rounded-xl bg-white dark:bg-gray-800 text-black dark:text-white text-base focus:border-blue-500 outline-none" value={newEmpData.monthlyHours || ''} onChange={(e) => setNewEmpData({ ...newEmpData, monthlyHours: parseFloat(e.target.value) })} />
+1825:                  <div className="flex gap-2">
+1826:                    <button 
+1827:                      onClick={() => { 
+1828:                        if(newEmpData.name) { 
+1829:                          if (editingEmployeeId) {
+1830:                            setEmployees(employees.map(e => e.id === editingEmployeeId ? { ...e, ...newEmpData } : e));
+1831:                            setEditingEmployeeId(null);
+1832:                          } else {
+1833:                            setEmployees([...employees, {...newEmpData, id: Math.random().toString(36).substr(2, 9)}]); 
+1834:                          }
+1835:                          setNewEmpData({name: '', sectorId: '', salary: 0, monthlyHours: 220, type: EmployeeType.REGISTRADO}); 
+1836:                        } 
+1837:                      }} 
+1838:                      className={`${editingEmployeeId ? 'bg-green-600' : 'bg-blue-600'} text-white font-bold rounded-xl flex-1 py-3 active:scale-95 transition`}
+1839:                    >
+1840:                      {editingEmployeeId ? 'Salvar' : 'Add'}
+1841:                    </button>
+1842:                    {editingEmployeeId && (
+1843:                      <button onClick={() => { setEditingEmployeeId(null); setNewEmpData({name: '', sectorId: '', salary: 0, monthlyHours: 220, type: EmployeeType.REGISTRADO}); }} className="bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-300 font-bold rounded-xl px-3 hover:bg-gray-300 dark:hover:bg-gray-600 transition"><XCircle className="w-5 h-5" /></button>
+1844:                    )}
+1845:                  </div>
+1846:                </div>
+1847:                
+1848:                {/* Desktop View */}
+1849:                <div className="hidden md:block">
+1850:                    <table className="w-full text-left"><thead><tr className="border-b dark:border-gray-700 text-xs text-gray-400 dark:text-gray-500"><th className="py-4">Nome</th><th className="py-4">Setor</th><th className="py-4">Valor Hora (+25%)</th><th className="py-4 text-right">Ação</th></tr></thead><tbody>{employees.map(e => (<tr key={e.id} className="border-b dark:border-gray-700"><td className="py-4 dark:text-gray-200">{e.name}</td><td className="py-4 dark:text-gray-300">{sectors.find(s => s.id === e.sectorId)?.name}</td><td className="py-4 dark:text-gray-300">{formatCurrency((e.salary / (e.monthlyHours || 1)) * 1.25)}</td><td className="py-4 text-right flex justify-end gap-2"><button onClick={() => { setEditingEmployeeId(e.id); setNewEmpData({ name: e.name, sectorId: e.sectorId, salary: e.salary, monthlyHours: e.monthlyHours, type: e.type }); }} className="text-blue-500 hover:text-blue-400"><Edit2 className="w-4 h-4" /></button><button onClick={() => setEmployees(employees.filter(emp => emp.id !== e.id))} className="text-red-400 hover:text-red-300"><XCircle className="w-4 h-4" /></button></td></tr>))}</tbody></table>
+1851:                </div>
+1852:
+1853:                {/* Mobile View */}
+1854:                <div className="md:hidden space-y-4">
+1855:                    {employees.map(e => (
+1856:                        <div key={e.id} className="bg-gray-50 dark:bg-gray-900 p-4 rounded-xl border border-gray-100 dark:border-gray-700 flex flex-col gap-2">
+1857:                            <div className="flex justify-between items-start">
+1858:                                <div>
+1859:                                    <h4 className="font-bold text-gray-800 dark:text-gray-200 text-lg">{e.name}</h4>
+1860:                                    <p className="text-xs text-gray-500 dark:text-gray-400 uppercase font-bold">{sectors.find(s => s.id === e.sectorId)?.name}</p>
+1861:                                </div>
+1862:                                <div className="flex gap-2">
+1863:                                    <button onClick={() => { setEditingEmployeeId(e.id); setNewEmpData({ name: e.name, sectorId: e.sectorId, salary: e.salary, monthlyHours: e.monthlyHours, type: e.type }); }} className="bg-white dark:bg-gray-800 p-2 rounded-lg text-blue-600 dark:text-blue-400 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700"><Edit2 className="w-5 h-5" /></button>
+1864:                                    <button onClick={() => setEmployees(employees.filter(emp => emp.id !== e.id))} className="bg-white dark:bg-gray-800 p-2 rounded-lg text-red-500 dark:text-red-400 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700"><XCircle className="w-5 h-5" /></button>
+1865:                                </div>
+1866:                            </div>
+1867:                            <div className="flex items-center gap-2 mt-1">
+1868:                                <span className="text-sm text-gray-600 dark:text-gray-300 bg-white dark:bg-gray-800 px-2 py-1 rounded border dark:border-gray-700">R$ {e.salary}</span>
+1869:                                <span className="text-sm text-gray-600 dark:text-gray-300 bg-white dark:bg-gray-800 px-2 py-1 rounded border dark:border-gray-700">{e.monthlyHours}h</span>
+1870:                                <span className="text-sm font-bold text-green-600 dark:text-green-400 ml-auto">{formatCurrency((e.salary / (e.monthlyHours || 1)) * 1.25)}/h</span>
+1871:                            </div>
+1872:                        </div>
+1873:                    ))}
+1874:                </div>
+1875:              </div>
+1876:            )}
+1877:
+1878:            {state.adminSubView === 'INTEGRATIONS' && (
+1879:              <div className="bg-white dark:bg-gray-800 p-6 md:p-8 rounded-3xl border border-gray-100 dark:border-gray-700 space-y-8">
+1880:                <h2 className="text-2xl font-bold dark:text-white flex items-center gap-2"><Database className="text-blue-600 dark:text-blue-400" /> Sincronização</h2>
+1881:                <div className="p-6 md:p-8 border-2 border-dashed border-blue-200 dark:border-blue-800 rounded-3xl bg-blue-50/10 dark:bg-blue-900/10 space-y-4">
+1882:                  <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+1883:                    <div><h3 className="text-xl font-bold text-gray-800 dark:text-gray-200">Link de Acesso (24h)</h3><p className="text-sm text-gray-500 dark:text-gray-400">Cria um link temporário para preenchimento externo.</p></div>
+1884:                    <button onClick={generateAccessLink} className="w-full md:w-auto bg-blue-600 text-white px-6 py-3 rounded-xl font-bold flex items-center justify-center gap-2 shadow-lg hover:bg-blue-700 transition active:scale-95"><Share2 className="w-5 h-5" /> Gerar Link</button>
+1885:                  </div>
+1886:                  {generatedLink && <div className="flex items-center gap-2 bg-white dark:bg-gray-900 p-4 rounded-xl border border-blue-100 dark:border-gray-700"><input readOnly value={generatedLink} className="flex-1 text-xs text-gray-400 dark:text-gray-500 bg-transparent outline-none font-mono" /><button onClick={() => { navigator.clipboard.writeText(generatedLink); setAlertMessage('Copiado!'); }} className="text-blue-600 dark:text-blue-400 p-2"><Copy className="w-4 h-4" /></button></div>}
+1887:                </div>
+1888:                <div className="p-6 md:p-8 border border-gray-100 dark:border-gray-700 rounded-3xl bg-gray-50/50 dark:bg-gray-900/50 space-y-4">
+1889:                  <h3 className="text-xl font-bold text-gray-800 dark:text-gray-200">Endpoint da Planilha</h3>
+1890:                  <p className="text-xs text-gray-400 dark:text-gray-500 flex items-center gap-2"><AlertCircle className="w-3 h-3" /> URL do Web App do Google Apps Script.</p>
+1891:                  <input type="text" className="w-full p-4 border dark:border-gray-700 rounded-xl bg-white dark:bg-gray-800 text-black dark:text-white outline-none text-base focus:border-blue-500" value={dbUrl} onChange={(e) => setDbUrl(e.target.value)} />
+1892:                  <div className="flex flex-col md:flex-row gap-3">
+1893:                    <button onClick={() => loadDatabase()} className="flex-1 bg-white dark:bg-gray-800 border border-blue-600 dark:border-blue-500 text-blue-600 dark:text-blue-400 px-6 py-4 rounded-xl font-bold active:bg-blue-50 dark:active:bg-gray-700 transition">Importar</button>
+1894:                    <button onClick={exportToPDF} className="flex-1 bg-blue-600 text-white px-8 py-4 rounded-xl font-bold shadow-lg active:scale-95 transition">Exportar</button>
+1895:                  </div>
+1896:                  <div className="mt-4">
+1897:                    <button onClick={executarFechamentoSemanal} className="w-full bg-red-600 hover:bg-red-700 text-white px-8 py-4 rounded-xl font-bold shadow-lg active:scale-95 transition flex items-center justify-center gap-2">
+1898:                      <AlertCircle className="w-5 h-5" />
+1899:                      FECHAMENTO SEMANAL (Salvar + Limpar Tudo)
+1900:                    </button>
+1901:                  </div>
+1902:                </div>
+1903:
+1904:                <div className="p-6 md:p-8 border border-gray-100 dark:border-gray-700 rounded-3xl bg-gray-50/50 dark:bg-gray-900/50 space-y-4">
+1905:                  <h3 className="text-xl font-bold text-gray-800 dark:text-gray-200">Configuração do Apps Script</h3>
+1906:                  <p className="text-xs text-gray-400 dark:text-gray-500">Insira os IDs das pastas do Google Drive onde as fichas serão salvas.</p>
+1907:                  
+1908:                  <div className="space-y-4">
+1909:                    <div>
+1910:                      <label className="block text-sm font-bold text-gray-700 dark:text-gray-300 mb-1">ID da Pasta (HE Registrado)</label>
+1911:                      <input type="text" className="w-full p-3 border dark:border-gray-700 rounded-xl bg-white dark:bg-gray-800 text-black dark:text-white outline-none text-sm font-mono focus:border-blue-500" value={folderRegId} onChange={(e) => { setFolderRegId(extractFolderId(e.target.value)); }} />
+1912:                    </div>
+1913:                    <div>
+1914:                      <label className="block text-sm font-bold text-gray-700 dark:text-gray-300 mb-1">ID da Pasta (HE Fixo)</label>
+1915:                      <input type="text" className="w-full p-3 border dark:border-gray-700 rounded-xl bg-white dark:bg-gray-800 text-black dark:text-white outline-none text-sm font-mono focus:border-blue-500" value={folderFixoId} onChange={(e) => { setFolderFixoId(extractFolderId(e.target.value)); }} />
+1916:                    </div>
+1917:                  </div>
+1918:
+1919:                  <div className="mt-8">
+1920:                    <div className="flex items-center justify-between mb-2">
+1921:                      <h4 className="font-bold text-gray-800 dark:text-gray-200">Código do Apps Script</h4>
+1922:                      <button onClick={() => { navigator.clipboard.writeText(appsScriptCode); setAlertMessage('Código copiado!'); }} className="text-blue-600 dark:text-blue-400 text-sm font-bold flex items-center gap-1 hover:text-blue-800 dark:hover:text-blue-300"><Copy className="w-4 h-4" /> Copiar Código</button>
+1923:                    </div>
+1924:                    <div className="bg-gray-900 rounded-xl p-4 overflow-x-auto">
+1925:                      <pre className="text-xs text-green-400 font-mono whitespace-pre-wrap">{appsScriptCode}</pre>
+1926:                    </div>
+1927:                  </div>
+1928:                </div>
+1929:              </div>
+1930:            )}
+1931:
+1932:            {state.adminSubView === 'FILES' && (
+1933:              <div className="bg-white dark:bg-gray-800 p-6 md:p-8 rounded-3xl border border-gray-100 dark:border-gray-700 space-y-8">
+1934:                <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+1935:                  <h2 className="text-2xl font-bold dark:text-white flex items-center gap-2"><Folder className="text-blue-600 dark:text-blue-400" /> Arquivos Salvos</h2>
+1936:                  <div className="flex gap-2">
+1937:                    <button onClick={() => fetchDriveFiles(folderRegId, 'HE Registrado')} className="bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 px-4 py-2 rounded-lg font-bold hover:bg-blue-100 dark:hover:bg-blue-900/50 transition">Ver HE Registrado</button>
+1938:                    <button onClick={() => fetchDriveFiles(folderFixoId, 'HE Fixo')} className="bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 px-4 py-2 rounded-lg font-bold hover:bg-blue-100 dark:hover:bg-blue-900/50 transition">Ver HE Fixo</button>
+1939:                  </div>
+1940:                </div>
+1941:
+1942:                {isLoadingFiles ? (
+1943:                  <div className="flex justify-center items-center p-12">
+1944:                    <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+1945:                  </div>
+1946:                ) : currentFolderId ? (
+1947:                  <div className="space-y-4">
+1948:                    {/* Breadcrumbs */}
+1949:                    <div className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400 bg-gray-50 dark:bg-gray-900 p-3 rounded-xl overflow-x-auto">
+1950:                      {folderHistory.map((folder, index) => (
+1951:                        <div key={folder.id} className="flex items-center gap-2 whitespace-nowrap">
+1952:                          {index > 0 && <span>/</span>}
+1953:                          <button 
+1954:                            onClick={() => fetchDriveFiles(folder.id, folder.name)}
+1955:                            className={`hover:text-blue-600 dark:hover:text-blue-400 transition ${index === folderHistory.length - 1 ? 'font-bold text-gray-900 dark:text-gray-100' : ''}`}
+1956:                          >
+1957:                            {folder.name}
+1958:                          </button>
+1959:                        </div>
+1960:                      ))}
+1961:                    </div>
+1962:
+1963:                    {/* Folders and Files List */}
+1964:                    <div className="bg-gray-50 dark:bg-gray-900 rounded-2xl border border-gray-100 dark:border-gray-700 overflow-hidden">
+1965:                      {driveFiles.folders.length === 0 && driveFiles.files.length === 0 ? (
+1966:                        <div className="p-8 text-center text-gray-500 dark:text-gray-400">
+1967:                          Pasta vazia
+1968:                        </div>
+1969:                      ) : (
+1970:                        <ul className="divide-y divide-gray-100 dark:divide-gray-800">
+1971:                          {driveFiles.folders.map(folder => (
+1972:                            <li key={folder.id}>
+1973:                              <button 
+1974:                                onClick={() => fetchDriveFiles(folder.id, folder.name)}
+1975:                                className="w-full flex items-center gap-3 p-4 hover:bg-gray-100 dark:hover:bg-gray-800 transition text-left"
+1976:                              >
+1977:                                <Folder className="w-5 h-5 text-blue-500 flex-shrink-0" />
+1978:                                <span className="font-medium text-gray-800 dark:text-gray-200 truncate">{folder.name}</span>
+1979:                              </button>
+1980:                            </li>
+1981:                          ))}
+1982:                          {driveFiles.files.map(file => (
+1983:                            <li key={file.id}>
+1984:                              <a 
+1985:                                href={file.url} 
+1986:                                target="_blank" 
+1987:                                rel="noopener noreferrer"
+1988:                                className="w-full flex items-center gap-3 p-4 hover:bg-gray-100 dark:hover:bg-gray-800 transition"
+1989:                              >
+1990:                                <FileText className="w-5 h-5 text-red-500 flex-shrink-0" />
+1991:                                <span className="font-medium text-gray-800 dark:text-gray-200 truncate">{file.name}</span>
+1992:                              </a>
+1993:                            </li>
+1994:                          ))}
+1995:                        </ul>
+1996:                      )}
+1997:                    </div>
+1998:                  </div>
+1999:                ) : (
+2000:                  <div className="text-center p-12 border-2 border-dashed border-gray-200 dark:border-gray-700 rounded-3xl">
+2001:                    <Folder className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+2002:                    <h3 className="text-lg font-bold text-gray-800 dark:text-gray-200 mb-2">Nenhuma pasta selecionada</h3>
+2003:                    <p className="text-gray-500 dark:text-gray-400">Selecione uma das pastas acima para visualizar os arquivos.</p>
+2004:                  </div>
+2005:                )}
+2006:              </div>
+2007:            )}
+2008:          </div>
+2009:        </div>
+2010:      )}
+2011:
+2012:      {showFormModal && (
+2013:        <div className="fixed inset-0 bg-white dark:bg-gray-900 md:bg-black/60 md:dark:bg-black/80 md:backdrop-blur-sm z-[60] flex items-center justify-center md:p-4 overflow-hidden">
+2014:          <div className="bg-white dark:bg-gray-800 md:rounded-3xl shadow-2xl w-full max-w-4xl h-full md:max-h-[90vh] overflow-y-auto p-4 md:p-8 relative flex flex-col">
+2015:            <button onClick={() => { setShowFormModal(false); setEditingRequestId(null); }} className="absolute top-4 right-4 text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 bg-gray-100 dark:bg-gray-700 rounded-full p-1"><XCircle className="w-8 h-8" /></button>
+2016:            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6 mt-2 md:mt-0">
+2017:              <h2 className="text-2xl font-bold dark:text-white">Fechamento Semanal</h2>
+2018:              <div className="flex items-center gap-4 bg-gray-50 dark:bg-gray-900 p-2 rounded-xl border border-gray-100 dark:border-gray-700"><span className="text-sm font-medium text-gray-500 dark:text-gray-400">Semana:</span><input type="date" className="bg-transparent text-black dark:text-white outline-none text-sm font-bold" value={currentWeek} onChange={(e) => !editingRequestId && setCurrentWeek(e.target.value)} disabled={!!editingRequestId} /></div>
+2019:            </div>
+2020:            
+2021:            <div className="space-y-4 flex-1 overflow-y-auto pb-20">
+2022:              {modalRecords.map((r, idx) => {
+2023:                const activeRequestType = editingRequestId 
+2024:                  ? requests.find(r => r.id === editingRequestId)?.employeeType 
+2025:                  : state.flowType;
+2026:                  
+2027:                const isRegistradoFlow = activeRequestType === EmployeeType.REGISTRADO;
+2028:
+2029:                return (
+2030:                  <div key={idx} className="bg-gray-50 dark:bg-gray-900 p-4 md:p-6 rounded-2xl border border-gray-100 dark:border-gray-700 shadow-sm space-y-3">
+2031:                    <div className="flex justify-between items-center border-b dark:border-gray-700 pb-2 border-gray-200">
+2032:                      <span className="font-bold text-gray-800 dark:text-gray-200 capitalize text-lg">{new Date(r.date + 'T00:00:00').toLocaleDateString('pt-BR', { weekday: 'short', day: '2-digit' })}</span>
+2033:                      {isRegistradoFlow && (
+2034:                        <button onClick={() => { const n = [...modalRecords]; n[idx].isFolgaVendida = !n[idx].isFolgaVendida; setModalRecords(n); }} className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all border ${r.isFolgaVendida ? 'bg-blue-600 border-blue-600 text-white' : 'bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-gray-500 dark:text-gray-400'}`}>Folga Vendida</button>
+2035:                      )}
+2036:                    </div>
+2037:                    <div className={`grid gap-3 ${isRegistradoFlow && !r.isFolgaVendida ? 'grid-cols-2 md:grid-cols-4' : 'grid-cols-2'}`}>
+2038:                      <div className="flex flex-col"><label className="text-[10px] uppercase font-bold text-gray-400 dark:text-gray-500 mb-1">Entrada</label><input type="time" className="w-full p-3 border dark:border-gray-700 rounded-xl bg-white dark:bg-gray-800 text-black dark:text-white text-lg text-center font-bold outline-none focus:border-blue-500" value={r.realEntry} onChange={(e) => { const n = [...modalRecords]; n[idx].realEntry = e.target.value; setModalRecords(n); }} /></div>
+2039:                      {isRegistradoFlow && !r.isFolgaVendida && (
+2040:                        <>
+2041:                          <div className="flex flex-col"><label className="text-[10px] uppercase font-bold text-gray-400 dark:text-gray-500 mb-1 text-center">P. Ent</label><input type="time" className="w-full p-3 border dark:border-gray-700 rounded-xl bg-white dark:bg-gray-800 text-gray-500 dark:text-gray-400 text-lg text-center outline-none focus:border-blue-500" value={r.punchEntry} onChange={(e) => { const n = [...modalRecords]; n[idx].punchEntry = e.target.value; setModalRecords(n); }} /></div>
+2042:                          <div className="flex flex-col"><label className="text-[10px] uppercase font-bold text-gray-400 dark:text-gray-500 mb-1 text-center">P. Sai</label><input type="time" className="w-full p-3 border dark:border-gray-700 rounded-xl bg-white dark:bg-gray-800 text-gray-500 dark:text-gray-400 text-lg text-center outline-none focus:border-blue-500" value={r.punchExit} onChange={(e) => { const n = [...modalRecords]; n[idx].punchExit = e.target.value; setModalRecords(n); }} /></div>
+2043:                        </>
+2044:                      )}
+2045:                      <div className="flex flex-col"><label className="text-[10px] uppercase font-bold text-gray-400 dark:text-gray-500 mb-1 text-right">Saída</label><input type="time" className="w-full p-3 border dark:border-gray-700 rounded-xl bg-white dark:bg-gray-800 text-black dark:text-white text-lg text-center font-bold outline-none focus:border-blue-500" value={r.realExit} onChange={(e) => { const n = [...modalRecords]; n[idx].realExit = e.target.value; setModalRecords(n); }} /></div>
+2046:                    </div>
+2047:                  </div>
+2048:                );
+2049:              })}
+2050:            
+2051:                {editingRequestId && <div className="mt-4"><label className="block text-sm font-semibold mb-2 dark:text-gray-200">Justificativa da Edição</label><textarea className="w-full p-4 border dark:border-gray-700 rounded-xl bg-white dark:bg-gray-800 text-black dark:text-white text-base focus:border-blue-500 outline-none" rows={3} value={editJustification} onChange={(e) => setEditJustification(e.target.value)} placeholder="Por que você está alterando este registro?" /></div>}
+2052:            </div>
+2053:
+2054:            <div className="mt-4 pt-4 border-t border-gray-100 dark:border-gray-700 flex gap-3 bg-white dark:bg-gray-800 sticky bottom-0 z-10 pb-6 md:pb-0">
+2055:                <button onClick={() => { setShowFormModal(false); setEditingRequestId(null); }} className="flex-1 py-4 bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 font-bold rounded-xl active:scale-95 transition">Cancelar</button>
+2056:                <button onClick={submitRequest} className="flex-[2] py-4 bg-blue-600 text-white font-bold rounded-xl shadow-lg active:scale-95 transition">Salvar</button>
+2057:            </div>
+2058:          </div>
+2059:        </div>
+2060:      )}
+2061:
+2062:      {/* Alert Modal */}
+2063:      {alertMessage && (
+2064:        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
+2065:          <div className="bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-xl max-w-sm w-full text-center space-y-4">
+2066:            <p className="text-gray-800 dark:text-gray-200 font-medium">{alertMessage}</p>
+2067:            <button onClick={() => setAlertMessage(null)} className="w-full bg-blue-600 text-white py-3 rounded-xl font-bold hover:bg-blue-700 transition">OK</button>
+2068:          </div>
+2069:        </div>
+2070:      )}
+2071:
+2072:      {/* Confirm Modal */}
+2073:      {confirmDialog && (
+2074:        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
+2075:          <div className="bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-xl max-w-sm w-full text-center space-y-6">
+2076:            <p className="text-gray-800 dark:text-gray-200 font-medium whitespace-pre-line">{confirmDialog.message}</p>
+2077:            <div className="flex gap-3">
+2078:              <button onClick={() => setConfirmDialog(null)} className="flex-1 bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 py-3 rounded-xl font-bold hover:bg-gray-200 dark:hover:bg-gray-600 transition">Cancelar</button>
+2079:              <button onClick={() => { confirmDialog.onConfirm(); setConfirmDialog(null); }} className="flex-1 bg-red-600 text-white py-3 rounded-xl font-bold hover:bg-red-700 transition">Confirmar</button>
+2080:            </div>
+2081:          </div>
+2082:        </div>
+2083:      )}
+2084:    </div>
+2085:  );
+2086:};
+2087:
+2088:export default App;

@@ -1,0 +1,288 @@
+import express from 'express';
+import { createServer as createViteServer } from 'vite';
+import path from 'path';
+import { google } from 'googleapis';
+import cookieParser from 'cookie-parser';
+import session from 'express-session';
+import dotenv from 'dotenv';
+import { distributeData, performClosing } from './src/server/closing.js';
+
+dotenv.config();
+
+const app = express();
+const PORT = 3000;
+
+app.use(express.json());
+app.use(cookieParser());
+
+// Setup Google Auth with Service Account
+const getGoogleAuth = () => {
+  if (!process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL || !process.env.GOOGLE_PRIVATE_KEY) {
+    throw new Error('As credenciais da Conta de Serviço (GOOGLE_SERVICE_ACCOUNT_EMAIL e GOOGLE_PRIVATE_KEY) não estão configuradas nas Variáveis de Ambiente.');
+  }
+  return new google.auth.GoogleAuth({
+    credentials: {
+      client_email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
+      private_key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+    },
+    scopes: [
+      'https://www.googleapis.com/auth/spreadsheets',
+      'https://www.googleapis.com/auth/drive'
+    ],
+  });
+};
+
+// Sheets API Proxy
+app.get('/api/config/status', (req, res) => {
+  res.json({
+    isConfigured: !!(process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL && process.env.GOOGLE_PRIVATE_KEY)
+  });
+});
+
+app.get('/api/sheets/load', async (req, res) => {
+  const spreadsheetId = req.query.spreadsheetId as string;
+  if (!spreadsheetId) return res.status(400).json({ error: 'Spreadsheet ID is required' });
+
+  if (!process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL || !process.env.GOOGLE_PRIVATE_KEY) {
+    return res.json({ 
+      needsSetup: true, 
+      error: 'As credenciais da Conta de Serviço não estão configuradas.' 
+    });
+  }
+
+  try {
+    const auth = getGoogleAuth();
+    const sheets = google.sheets({ version: 'v4', auth });
+    
+    const response = await sheets.spreadsheets.get({
+      spreadsheetId,
+      includeGridData: false,
+    });
+
+    const sheetNames = response.data.sheets?.map(s => s.properties?.title) || [];
+    const ranges = ['Setores!A:Z', 'Funcionarios!A:Z', 'Solicitacoes!A:Z'];
+    
+    // Filter ranges to only those that exist
+    const existingRanges = ranges.filter(r => sheetNames.includes(r.split('!')[0]));
+
+    if (existingRanges.length === 0) {
+      return res.json({ sectors: [], employees: [], requests: [] });
+    }
+
+    const valuesResponse = await sheets.spreadsheets.values.batchGet({
+      spreadsheetId,
+      ranges: existingRanges,
+    });
+
+    const valueRanges = valuesResponse.data.valueRanges || [];
+    
+    const parseSheet = (title: string) => {
+      const vr = valueRanges.find(v => v.range?.startsWith(title));
+      if (!vr || !vr.values || vr.values.length <= 1) return [];
+      const headers = vr.values[0];
+      return vr.values.slice(1).map(row => {
+        const obj: any = {};
+        headers.forEach((h, i) => {
+          let val = row[i];
+          if (typeof val === 'string' && (val.startsWith('[') || val.startsWith('{'))) {
+            try { val = JSON.parse(val); } catch(e) {}
+          }
+          obj[h] = val;
+        });
+        return obj;
+      });
+    };
+
+    res.json({
+      sectors: parseSheet('Setores'),
+      employees: parseSheet('Funcionarios'),
+      requests: parseSheet('Solicitacoes'),
+    });
+  } catch (error: any) {
+    console.error('Error loading sheets data:', error);
+    
+    // Handle 404 specifically
+    if (error.code === 404 || (error.message && error.message.includes('Requested entity was not found'))) {
+      return res.status(404).json({ 
+        error: 'Planilha não encontrada. Verifique se o ID ou URL da planilha está correto e se a Conta de Serviço tem permissão de acesso (Editor).' 
+      });
+    }
+    
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/sheets/sync', async (req, res) => {
+  const { spreadsheetId, sectors, employees, requests } = req.body;
+
+  if (!spreadsheetId) return res.status(400).json({ error: 'Spreadsheet ID is required' });
+
+  if (!process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL || !process.env.GOOGLE_PRIVATE_KEY) {
+    return res.json({ success: false, needsSetup: true, error: 'As credenciais da Conta de Serviço não estão configuradas.' });
+  }
+
+  try {
+    const auth = getGoogleAuth();
+    const sheets = google.sheets({ version: 'v4', auth });
+    
+    const prepareData = (data: any[]) => {
+      if (data.length === 0) return [];
+      const headers = Object.keys(data[0]);
+      const rows = data.map(item => headers.map(h => {
+        const val = item[h];
+        return (typeof val === 'object') ? JSON.stringify(val) : val;
+      }));
+      return [headers, ...rows];
+    };
+
+    const data = [
+      { range: 'Setores!A1', values: prepareData(sectors) },
+      { range: 'Funcionarios!A1', values: prepareData(employees) },
+      { range: 'Solicitacoes!A1', values: prepareData(requests) },
+    ].filter(d => d.values.length > 0);
+
+    // Clear and update
+    for (const d of data) {
+      const sheetName = d.range.split('!')[0];
+      await sheets.spreadsheets.values.clear({
+        spreadsheetId,
+        range: `${sheetName}!A:Z`,
+      });
+    }
+
+    await sheets.spreadsheets.values.batchUpdate({
+      spreadsheetId,
+      requestBody: {
+        valueInputOption: 'RAW',
+        data,
+      },
+    });
+
+    // Distribute data to HE - REGISTRADO and HE - FIXO
+    try {
+      await distributeData(sheets, spreadsheetId, requests);
+    } catch (e: any) {
+      console.error("Error distributing data:", e.message);
+      // We don't fail the whole sync if distribution fails, but we log it
+    }
+
+    res.json({ success: true });
+  } catch (error: any) {
+    console.error('Error syncing sheets data:', error);
+    
+    if (error.code === 404 || (error.message && error.message.includes('Requested entity was not found'))) {
+      return res.status(404).json({ 
+        success: false,
+        error: 'Planilha não encontrada. Verifique se o ID ou URL da planilha está correto e se a Conta de Serviço tem permissão de acesso (Editor).' 
+      });
+    }
+    
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post('/api/sheets/close', async (req, res) => {
+  const { spreadsheetId } = req.body;
+  if (!spreadsheetId) return res.status(400).json({ error: 'Spreadsheet ID is required' });
+
+  if (!process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL || !process.env.GOOGLE_PRIVATE_KEY) {
+    return res.json({ success: false, needsSetup: true, error: 'As credenciais da Conta de Serviço não estão configuradas.' });
+  }
+
+  try {
+    const auth = getGoogleAuth();
+    const sheets = google.sheets({ version: 'v4', auth });
+    
+    await performClosing(sheets, spreadsheetId);
+    
+    res.json({ success: true });
+  } catch (error: any) {
+    console.error('Error performing closing:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post('/api/sheets/action', async (req, res) => {
+  const { scriptUrl, action, data } = req.body;
+  if (!scriptUrl) return res.status(400).json({ error: 'Script URL is required' });
+
+  if (!process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL || !process.env.GOOGLE_PRIVATE_KEY) {
+    return res.json({ success: false, needsSetup: true, error: 'As credenciais da Conta de Serviço não estão configuradas.' });
+  }
+
+  try {
+    const auth = getGoogleAuth();
+    const client = await auth.getClient();
+    const token = await client.getAccessToken();
+
+    const response = await fetch(scriptUrl, {
+      method: 'POST',
+      headers: { 
+        'Content-Type': 'text/plain',
+        'Authorization': `Bearer ${token.token}`
+      },
+      body: JSON.stringify({ action, data }),
+    });
+
+    const result = await response.json();
+    res.json(result);
+  } catch (error: any) {
+    console.error('Error proxying Apps Script action:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/drive/files', async (req, res) => {
+  const folderId = req.query.folderId as string;
+  if (!folderId) return res.status(400).json({ error: 'Folder ID is required' });
+
+  if (!process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL || !process.env.GOOGLE_PRIVATE_KEY) {
+    return res.json({ success: false, needsSetup: true, error: 'As credenciais da Conta de Serviço não estão configuradas.' });
+  }
+
+  try {
+    const auth = getGoogleAuth();
+    const drive = google.drive({ version: 'v3', auth });
+
+    const response = await drive.files.list({
+      q: `'${folderId}' in parents and trashed = false`,
+      fields: 'files(id, name, mimeType, webViewLink, iconLink)',
+    });
+
+    const files = response.data.files?.map(f => ({
+      id: f.id,
+      name: f.name,
+      type: f.mimeType === 'application/vnd.google-apps.folder' ? 'folder' : 'file',
+      url: f.webViewLink,
+      icon: f.iconLink
+    })) || [];
+
+    res.json({ success: true, data: files });
+  } catch (error: any) {
+    console.error('Error listing drive files:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Vite middleware
+async function setupVite() {
+  if (process.env.NODE_ENV !== 'production') {
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: 'spa',
+    });
+    app.use(vite.middlewares);
+  } else {
+    const distPath = path.join(process.cwd(), 'dist');
+    app.use(express.static(distPath));
+    app.get('*', (req, res) => {
+      res.sendFile(path.join(distPath, 'index.html'));
+    });
+  }
+
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Server running on http://localhost:${PORT}`);
+  });
+}
+
+setupVite();
