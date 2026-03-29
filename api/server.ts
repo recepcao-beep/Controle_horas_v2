@@ -4,7 +4,7 @@ import { google } from 'googleapis';
 import cookieParser from 'cookie-parser';
 import session from 'express-session';
 import dotenv from 'dotenv';
-import { distributeData, performClosing } from '../src/server/closing.ts';
+import { distributeData, performClosing } from '../src/server/closing.js';
 
 dotenv.config();
 
