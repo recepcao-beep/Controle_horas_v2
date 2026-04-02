@@ -38,6 +38,10 @@ app.get('/api/config/status', (req, res) => {
   });
 });
 
+app.get('/api/config/service-account', (req, res) => {
+  res.json({ email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL || "Não configurado" });
+});
+
 app.get('/api/sheets/load', async (req, res) => {
   const spreadsheetId = req.query.spreadsheetId as string;
   if (!spreadsheetId) return res.status(400).json({ error: 'Spreadsheet ID is required' });
@@ -264,20 +268,91 @@ app.get('/api/drive/files', async (req, res) => {
 
     const response = await drive.files.list({
       q: `'${folderId}' in parents and trashed = false`,
-      fields: 'files(id, name, mimeType, webViewLink, iconLink)',
+      fields: 'files(id, name, mimeType, webViewLink, iconLink, thumbnailLink)',
+      pageSize: 1000,
+      orderBy: 'folder,name',
     });
 
-    const files = response.data.files?.map(f => ({
+    const allFiles = response.data.files?.map(f => ({
       id: f.id,
       name: f.name,
       type: f.mimeType === 'application/vnd.google-apps.folder' ? 'folder' : 'file',
       url: f.webViewLink,
-      icon: f.iconLink
+      icon: f.iconLink,
+      thumbnail: f.thumbnailLink
     })) || [];
 
-    res.json({ success: true, data: files });
+    const folders = allFiles.filter(f => f.type === 'folder');
+    const regularFiles = allFiles.filter(f => f.type === 'file');
+
+    res.json({ success: true, data: { folders, files: regularFiles } });
   } catch (error: any) {
     console.error('Error listing drive files:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/drive/download/:fileId', async (req, res) => {
+  const fileId = req.params.fileId;
+  if (!fileId) return res.status(400).json({ error: 'File ID is required' });
+
+  try {
+    const auth = getGoogleAuth();
+    const drive = google.drive({ version: 'v3', auth });
+
+    // First check if it's a Google Workspace document or a binary file
+    const fileMeta = await drive.files.get({ fileId, fields: 'mimeType, name' });
+    const mimeType = fileMeta.data.mimeType;
+    const isWorkspace = mimeType?.startsWith('application/vnd.google-apps.');
+
+    res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(fileMeta.data.name || 'document.pdf')}"`);
+
+    if (mimeType === 'application/vnd.google-apps.spreadsheet') {
+      res.setHeader('Content-Type', 'application/pdf');
+      
+      const client = await auth.getClient();
+      const tokenResponse = await client.getAccessToken();
+      const token = tokenResponse.token;
+      
+      // Parâmetros para ajustar o recorte da folha:
+      // fitw=true (ajustar à largura), size=A4, portrait=true (retrato), margins
+      const exportUrl = `https://docs.google.com/spreadsheets/d/${fileId}/export?format=pdf&portrait=true&size=A4&fitw=true&gridlines=false&top_margin=0.25&bottom_margin=0.25&left_margin=0.25&right_margin=0.25`;
+      
+      const fetchResponse = await fetch(exportUrl, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+      
+      if (!fetchResponse.ok) {
+        throw new Error(`Failed to export PDF: ${fetchResponse.statusText}`);
+      }
+      
+      const arrayBuffer = await fetchResponse.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
+      res.send(buffer);
+      
+    } else if (isWorkspace) {
+      // Export as PDF
+      res.setHeader('Content-Type', 'application/pdf');
+      const response = await drive.files.export({
+        fileId,
+        mimeType: 'application/pdf'
+      }, { responseType: 'stream' });
+      
+      response.data.pipe(res);
+    } else {
+      // Download directly
+      res.setHeader('Content-Type', mimeType || 'application/octet-stream');
+      const response = await drive.files.get({
+        fileId,
+        alt: 'media'
+      }, { responseType: 'stream' });
+      
+      response.data.pipe(res);
+    }
+  } catch (error: any) {
+    console.error('Error downloading drive file:', error);
     res.status(500).json({ error: error.message });
   }
 });

@@ -31,7 +31,8 @@ import {
   Folder,
   FileText,
   Grid,
-  List
+  List,
+  Printer
 } from 'lucide-react';
 import { 
   BarChart, 
@@ -368,33 +369,39 @@ const App: React.FC = () => {
     setIsLoadingFiles(true);
     try {
       const response = await fetch(`/api/drive/files?folderId=${folderId}`);
-      
       const result = await response.json();
+      
       if (result.success) {
         setDriveFiles(result.data);
         setCurrentFolderId(folderId);
-        
-        // Save to cache
         setFolderCache(prev => ({ ...prev, [folderId]: result.data }));
-        
-        // Update history if it's a new path
         setFolderHistory(prev => {
           const index = prev.findIndex(f => f.id === folderId);
-          if (index !== -1) {
-            return prev.slice(0, index + 1);
-          } else {
-            return [...prev, { id: folderId, name: folderName }];
-          }
+          if (index !== -1) return prev.slice(0, index + 1);
+          return [...prev, { id: folderId, name: folderName }];
         });
       } else {
-        setAlertMessage("Erro ao carregar arquivos: " + (result.error || "Verifique se as pastas do Google Drive estão configuradas corretamente e se você tem permissão de acesso."));
+        // Obter o email da conta de serviço para instruir o usuário
+        const configRes = await fetch('/api/config/service-account');
+        const config = await configRes.json();
+        const saEmail = config.email;
+        
+        setAlertMessage(`Erro ao carregar arquivos: ${result.error || "Acesso negado"}.\n\nCertifique-se de que a pasta no Google Drive foi compartilhada com o email da Conta de Serviço:\n\n${saEmail}`);
       }
     } catch (error) {
       console.error("Erro ao listar arquivos:", error);
-      setAlertMessage("Falha na comunicação com o servidor.");
+      setAlertMessage("Falha na comunicação com o servidor ao carregar arquivos.");
     } finally {
       setIsLoadingFiles(false);
     }
+  };
+
+  const printFile = (fileId: string) => {
+    // Abre o arquivo em uma nova aba para visualização/impressão.
+    // Evita o uso de iframe oculto que causa erros de cross-origin (CORS) 
+    // com o visualizador de PDF nativo do navegador e bloqueio de pop-ups.
+    const printUrl = `/api/drive/download/${fileId}`;
+    window.open(printUrl, '_blank');
   };
 
   const exportToPDF = async () => {
@@ -607,9 +614,13 @@ const App: React.FC = () => {
             }
           }
         }
-        totalDiffHours += dailyHours;
+        
+        if (dailyHours > 0) {
+          totalDiffHours += dailyHours;
+          // Adiciona o valor das horas + o bônus de 12 reais por dia trabalhado (igual ao Fixo)
+          totalPayment += (dailyHours * overtimeRate) + 12;
+        }
       });
-      totalPayment = totalDiffHours * overtimeRate;
     } else {
       const hourlyRate = parseCurrency(sector?.fixedRate);
       modalRecords.forEach(r => { 
@@ -2147,16 +2158,23 @@ function testeManual() {
                             </li>
                           ))}
                           {driveFiles.files.map(file => (
-                            <li key={file.id}>
+                            <li key={file.id} className="w-full flex items-center justify-between p-4 hover:bg-gray-100 dark:hover:bg-gray-800 transition border-b border-gray-100 dark:border-gray-800 last:border-0">
                               <a 
                                 href={file.url} 
                                 target="_blank" 
                                 rel="noopener noreferrer"
-                                className="w-full flex items-center gap-3 p-4 hover:bg-gray-100 dark:hover:bg-gray-800 transition"
+                                className="flex items-center gap-3 flex-1"
                               >
                                 <FileText className="w-5 h-5 text-red-500 flex-shrink-0" />
                                 <span className="font-medium text-gray-800 dark:text-gray-200 truncate">{file.name}</span>
                               </a>
+                              <button
+                                onClick={(e) => { e.preventDefault(); printFile(file.id); }}
+                                className="p-2 text-gray-500 hover:text-blue-600 dark:text-gray-400 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/30 rounded-lg transition ml-2"
+                                title="Imprimir arquivo"
+                              >
+                                <Printer className="w-5 h-5" />
+                              </button>
                             </li>
                           ))}
                         </ul>
@@ -2173,16 +2191,24 @@ function testeManual() {
                             </button>
                           ))}
                           {driveFiles.files.map(file => (
-                            <a 
-                              key={file.id}
-                              href={file.url} 
-                              target="_blank" 
-                              rel="noopener noreferrer"
-                              className="flex flex-col items-center justify-center p-4 bg-white dark:bg-gray-800 rounded-xl border border-gray-100 dark:border-gray-700 hover:border-red-300 dark:hover:border-red-700 hover:shadow-md transition gap-3 text-center group"
-                            >
-                              <FileText className="w-10 h-10 text-red-500 group-hover:scale-110 transition-transform" />
-                              <span className="font-medium text-sm text-gray-800 dark:text-gray-200 line-clamp-2">{file.name}</span>
-                            </a>
+                            <div key={file.id} className="relative group">
+                              <a 
+                                href={file.url} 
+                                target="_blank" 
+                                rel="noopener noreferrer"
+                                className="flex flex-col items-center justify-center p-4 bg-white dark:bg-gray-800 rounded-xl border border-gray-100 dark:border-gray-700 hover:border-red-300 dark:hover:border-red-700 hover:shadow-md transition gap-3 text-center h-full"
+                              >
+                                <FileText className="w-10 h-10 text-red-500 group-hover:scale-110 transition-transform" />
+                                <span className="font-medium text-sm text-gray-800 dark:text-gray-200 line-clamp-2">{file.name}</span>
+                              </a>
+                              <button
+                                onClick={(e) => { e.preventDefault(); printFile(file.id); }}
+                                className="absolute top-2 right-2 p-2 bg-white dark:bg-gray-700 text-gray-500 hover:text-blue-600 dark:text-gray-300 dark:hover:text-blue-400 rounded-full shadow-sm opacity-0 group-hover:opacity-100 transition-opacity border border-gray-200 dark:border-gray-600"
+                                title="Imprimir arquivo"
+                              >
+                                <Printer className="w-4 h-4" />
+                              </button>
+                            </div>
                           ))}
                         </div>
                       )}
