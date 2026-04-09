@@ -157,10 +157,18 @@ app.post('/api/sheets/sync', async (req, res) => {
       return [headers, ...rows];
     };
 
+    const sortedRequests = [...requests].sort((a, b) => {
+      const sectorA = (a.sectorName || "").toUpperCase();
+      const sectorB = (b.sectorName || "").toUpperCase();
+      if (sectorA < sectorB) return -1;
+      if (sectorA > sectorB) return 1;
+      return (a.employeeName || "").localeCompare(b.employeeName || "");
+    });
+
     const data = [
       { range: 'Setores!A1', values: prepareData(sectors) },
       { range: 'Funcionarios!A1', values: prepareData(employees) },
-      { range: 'Solicitacoes!A1', values: prepareData(requests) },
+      { range: 'Solicitacoes!A1', values: prepareData(sortedRequests) },
     ].filter(d => d.values.length > 0);
 
     // Clear and update

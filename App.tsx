@@ -116,6 +116,7 @@ const App: React.FC = () => {
   // Estados Admin
   const [newSec, setNewSec] = useState({ name: '', fixedRate: 0 });
   const [newEmpData, setNewEmpData] = useState({ name: '', sectorId: '', salary: 0, monthlyHours: 220, type: EmployeeType.REGISTRADO });
+  const [employeeSectorFilter, setEmployeeSectorFilter] = useState<string>('ALL');
   // Estado para controlar qual funcionário está sendo editado
   const [editingEmployeeId, setEditingEmployeeId] = useState<string | null>(null);
   
@@ -185,6 +186,14 @@ const App: React.FC = () => {
   }, [requests, employees, sectors]);
 
   // --- Lógica de Dashboard (useMemo) ---
+  const filteredAndSortedEmployees = useMemo(() => {
+    let filtered = employees;
+    if (employeeSectorFilter !== 'ALL') {
+      filtered = filtered.filter(e => e.sectorId === employeeSectorFilter);
+    }
+    return filtered.sort((a, b) => a.name.localeCompare(b.name));
+  }, [employees, employeeSectorFilter]);
+
   const dashboardData = useMemo(() => {
     const approved = requests.filter(r => r.status === RequestStatus.APROVADO);
     
@@ -490,14 +499,10 @@ const App: React.FC = () => {
     if (localData) {
       try {
         const parsed = JSON.parse(localData);
-        // Remove dbUrl from local storage to prevent old links from causing issues
-        if (parsed.dbUrl) {
-          delete parsed.dbUrl;
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed));
-        }
         if (parsed.scriptUrl) setScriptUrl(parsed.scriptUrl);
         if (parsed.folderRegId) setFolderRegId(parsed.folderRegId);
         if (parsed.folderFixoId) setFolderFixoId(parsed.folderFixoId);
+        if (parsed.dbUrl) initialUrl = parsed.dbUrl;
       } catch (e) {}
     }
     
@@ -584,7 +589,9 @@ const App: React.FC = () => {
     let totalPayment = 0;
 
     if (targetFlowType === EmployeeType.REGISTRADO && employee) {
-      const hourlyBase = (parseCurrency(employee.salary) / (parseFloat(String(employee.monthlyHours)) || 1));
+      const salary = parseCurrency(employee.salary);
+      const monthlyHours = parseFloat(String(employee.monthlyHours)) || 220;
+      const hourlyBase = salary / monthlyHours;
       const overtimeRate = hourlyBase * 1.25;
       
       modalRecords.forEach(r => {
@@ -617,8 +624,8 @@ const App: React.FC = () => {
         
         if (dailyHours > 0) {
           totalDiffHours += dailyHours;
-          // Adiciona o valor das horas + o bônus de 12 reais por dia trabalhado (igual ao Fixo)
-          totalPayment += (dailyHours * overtimeRate) + 12;
+          // HE-REGISTRADO não tem vale transporte (+R$12,00 por dia) só o HE-FIXO
+          totalPayment += (dailyHours * overtimeRate) + (targetFlowType === EmployeeType.FIXO ? 12 : 0);
         }
       });
     } else {
@@ -630,6 +637,7 @@ const App: React.FC = () => {
           let dailyHours = end - start;
           if (dailyHours < 0) dailyHours += 24;
           if (dailyHours > 0) {
+            // HE-FIXO tem vale transporte (+R$12,00 por dia)
             totalPayment += (dailyHours * hourlyRate) + 12;
             totalDiffHours += dailyHours;
           }
@@ -745,6 +753,53 @@ const App: React.FC = () => {
                         ))}
                     </tbody>
                 </table>
+
+                {/* Detalhamento do Cálculo */}
+                <div className="mt-4 pt-4 border-t border-gray-200 dark:border-gray-700">
+                    <div className="bg-blue-50/50 dark:bg-blue-900/20 rounded-xl p-3 space-y-1 font-mono text-[10px]">
+                        {(() => {
+                            const employee = employees.find(e => String(e.id) === String(req.employeeId));
+                            const sector = sectors.find(s => String(s.id) === String(req.sectorId));
+                            const daysWorked = req.records.filter(r => {
+                                const h = getDailyHours(r, req.employeeType);
+                                return h !== '-' && h !== '0h 00m';
+                            }).length;
+
+                            if (req.employeeType === EmployeeType.REGISTRADO) {
+                                const salary = parseCurrency(employee?.salary);
+                                const monthlyHours = parseFloat(String(employee?.monthlyHours)) || 220;
+                                const hourlyBase = salary / monthlyHours;
+                                const overtimeRate = hourlyBase * 1.25;
+                                const hoursTotal = req.totalTimeDecimal * overtimeRate;
+                                const bonusTotal = daysWorked * 12;
+
+                                return (
+                                    <>
+                                        <div className="flex justify-between"><span>Base:</span><span>{formatCurrency(salary)} / {monthlyHours}h = {formatCurrency(hourlyBase)}/h</span></div>
+                                        <div className="flex justify-between text-blue-600 dark:text-blue-400 font-bold"><span>HE (+25%):</span><span>{formatCurrency(overtimeRate)}/h</span></div>
+                                        <div className="flex justify-between pt-1 border-t border-blue-100 dark:border-blue-800"><span>Horas:</span><span>{formatDecimalHours(req.totalTimeDecimal)} × {formatCurrency(overtimeRate)} = {formatCurrency(hoursTotal)}</span></div>
+                                    </>
+                                );
+                            } else {
+                                const hourlyRate = parseCurrency(sector?.fixedRate);
+                                const hoursTotal = req.totalTimeDecimal * hourlyRate;
+                                const bonusTotal = daysWorked * 12;
+
+                                return (
+                                    <>
+                                        <div className="flex justify-between"><span>Valor Fixo:</span><span>{formatCurrency(hourlyRate)}/h</span></div>
+                                        <div className="flex justify-between pt-1 border-t border-blue-100 dark:border-blue-800"><span>Horas:</span><span>{formatDecimalHours(req.totalTimeDecimal)} × {formatCurrency(hourlyRate)} = {formatCurrency(hoursTotal)}</span></div>
+                                        <div className="flex justify-between"><span>Vale Transporte:</span><span>{daysWorked} dias × R$ 12,00 = {formatCurrency(bonusTotal)}</span></div>
+                                    </>
+                                );
+                            }
+                        })()}
+                        <div className="pt-2 border-t border-blue-200 dark:border-blue-700 flex justify-between text-xs font-black text-gray-900 dark:text-white">
+                            <span>TOTAL:</span>
+                            <span>{formatCurrency(req.calculatedValue)}</span>
+                        </div>
+                    </div>
+                </div>
             </div>
         )}
 
@@ -773,6 +828,71 @@ const App: React.FC = () => {
           <button onClick={() => setRequests(requests.map(r => r.id === req.id ? {...r, status: RequestStatus.DELETADO} : r))} className="bg-gray-50 dark:bg-gray-700 text-gray-300 dark:text-gray-400 p-2 rounded-lg hover:bg-red-50 dark:hover:bg-red-900/30 hover:text-red-400 dark:hover:text-red-400 transition flex justify-center"><XCircle className="w-4 h-4" /></button>
         </div>
       </div>
+    );
+  };
+
+  const EmployeeRow: React.FC<{ e: Employee }> = ({ e }) => {
+    const [isExpanded, setIsExpanded] = useState(false);
+    const sector = sectors.find(s => s.id === e.sectorId);
+    const salary = parseCurrency(e.salary);
+    const monthlyHours = parseFloat(String(e.monthlyHours)) || 220;
+    const hourlyBase = salary / monthlyHours;
+    const overtimeRate = hourlyBase * 1.25;
+
+    return (
+      <>
+        <tr className="border-b dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-900/50 transition-colors">
+          <td className="py-4 dark:text-gray-200">
+            <button onClick={() => setIsExpanded(!isExpanded)} className="flex items-center gap-2 hover:text-blue-600 transition-colors font-bold">
+              {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+              {e.name}
+            </button>
+          </td>
+          <td className="py-4 dark:text-gray-300">{sector?.name}</td>
+          <td className="py-4 dark:text-gray-300 font-bold text-blue-600 dark:text-blue-400">{formatCurrency(overtimeRate)}</td>
+          <td className="py-4 text-right flex justify-end gap-2">
+            <button onClick={() => { setEditingEmployeeId(e.id); setNewEmpData({ name: e.name, sectorId: e.sectorId, salary: e.salary, monthlyHours: e.monthlyHours, type: e.type }); }} className="text-blue-500 hover:text-blue-400"><Edit2 className="w-4 h-4" /></button>
+            <button onClick={() => setEmployees(employees.filter(emp => emp.id !== e.id))} className="text-red-400 hover:text-red-300"><XCircle className="w-4 h-4" /></button>
+          </td>
+        </tr>
+        {isExpanded && (
+          <tr className="bg-blue-50/30 dark:bg-blue-900/10">
+            <td colSpan={4} className="p-4">
+              <div className="bg-white dark:bg-gray-800 rounded-2xl p-4 border border-blue-100 dark:border-blue-800 shadow-sm space-y-3 max-w-md">
+                <h5 className="text-[10px] font-black uppercase text-blue-600 dark:text-blue-400 mb-2">Memória de Cálculo (Hora Extra)</h5>
+                <div className="space-y-1 text-xs font-mono">
+                  {e.type === EmployeeType.REGISTRADO ? (
+                    <>
+                      <div className="flex justify-between text-gray-600 dark:text-gray-400">
+                        <span>Base:</span>
+                        <span>{formatCurrency(salary)} / {monthlyHours}h</span>
+                      </div>
+                      <div className="flex justify-between border-t border-gray-100 dark:border-gray-700 pt-1">
+                        <span>Hora Base:</span>
+                        <span>{formatCurrency(hourlyBase)}</span>
+                      </div>
+                      <div className="flex justify-between font-bold text-blue-600 dark:text-blue-400">
+                        <span>HE (+25%):</span>
+                        <span>{formatCurrency(overtimeRate)}</span>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="flex justify-between text-gray-600 dark:text-gray-400">
+                        <span>Valor Hora Fixo:</span>
+                        <span>{formatCurrency(parseCurrency(sector?.fixedRate))}</span>
+                      </div>
+                      <div className="pt-2 mt-2 border-t border-blue-100 dark:border-blue-800 text-[9px] text-gray-500 dark:text-gray-400 italic">
+                        * + R$ 12,00/dia (Vale Transporte) no fechamento.
+                      </div>
+                    </>
+                  )}
+                </div>
+              </div>
+            </td>
+          </tr>
+        )}
+      </>
     );
   };
 
@@ -1759,7 +1879,7 @@ function testeManual() {
                 {state.flowType === EmployeeType.REGISTRADO ? (
                   <select className="w-full p-4 border dark:border-gray-600 rounded-xl bg-gray-50 dark:bg-gray-900 text-black dark:text-white text-base focus:bg-white dark:focus:bg-gray-800 focus:border-blue-500 transition" value={selectedEmployee} onChange={(e) => setSelectedEmployee(e.target.value)}>
                     <option value="">Selecione...</option>
-                    {employees.filter(e => String(e.sectorId) === String(selectedSector) && e.type === state.flowType).map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
+                    {employees.filter(e => String(e.sectorId) === String(selectedSector) && e.type === state.flowType).sort((a, b) => a.name.localeCompare(b.name)).map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
                   </select>
                 ) : (
                   <input type="text" placeholder="Nome" className="w-full p-4 border dark:border-gray-600 rounded-xl bg-gray-50 dark:bg-gray-900 text-black dark:text-white text-base focus:bg-white dark:focus:bg-gray-800 focus:border-blue-500 transition" value={selectedEmployee} onChange={(e) => setSelectedEmployee(e.target.value)} />
@@ -1942,7 +2062,17 @@ function testeManual() {
 
             {state.adminSubView === 'EMPLOYEES' && (
               <div className="bg-white dark:bg-gray-800 p-6 md:p-8 rounded-3xl border border-gray-100 dark:border-gray-700 space-y-8">
-                <h2 className="text-2xl font-bold dark:text-white">Funcionários</h2>
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                  <h2 className="text-2xl font-bold dark:text-white">Funcionários</h2>
+                  <select 
+                    className="p-3 border dark:border-gray-700 rounded-xl bg-gray-50 dark:bg-gray-900 text-black dark:text-white text-sm focus:border-blue-500 outline-none w-full md:w-auto"
+                    value={employeeSectorFilter}
+                    onChange={(e) => setEmployeeSectorFilter(e.target.value)}
+                  >
+                    <option value="ALL">Todos os Setores</option>
+                    {sectors.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                  </select>
+                </div>
                 <div className="grid grid-cols-1 md:grid-cols-5 gap-4 bg-gray-50 dark:bg-gray-900 p-6 rounded-2xl">
                   <input type="text" placeholder="Nome" className="p-4 border dark:border-gray-700 rounded-xl bg-white dark:bg-gray-800 text-black dark:text-white text-base focus:border-blue-500 outline-none" value={newEmpData.name} onChange={(e) => setNewEmpData({ ...newEmpData, name: e.target.value })} />
                   <select className="p-4 border dark:border-gray-700 rounded-xl bg-white dark:bg-gray-800 text-black dark:text-white text-base focus:border-blue-500 outline-none" value={newEmpData.sectorId} onChange={(e) => setNewEmpData({ ...newEmpData, sectorId: e.target.value })}><option value="">Setor...</option>{sectors.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}</select>
@@ -1973,30 +2103,53 @@ function testeManual() {
                 
                 {/* Desktop View */}
                 <div className="hidden md:block">
-                    <table className="w-full text-left"><thead><tr className="border-b dark:border-gray-700 text-xs text-gray-400 dark:text-gray-500"><th className="py-4">Nome</th><th className="py-4">Setor</th><th className="py-4">Valor Hora (+25%)</th><th className="py-4 text-right">Ação</th></tr></thead><tbody>{employees.map(e => (<tr key={e.id} className="border-b dark:border-gray-700"><td className="py-4 dark:text-gray-200">{e.name}</td><td className="py-4 dark:text-gray-300">{sectors.find(s => s.id === e.sectorId)?.name}</td><td className="py-4 dark:text-gray-300">{formatCurrency((parseCurrency(e.salary) / (parseFloat(String(e.monthlyHours)) || 1)) * 1.25)}</td><td className="py-4 text-right flex justify-end gap-2"><button onClick={() => { setEditingEmployeeId(e.id); setNewEmpData({ name: e.name, sectorId: e.sectorId, salary: e.salary, monthlyHours: e.monthlyHours, type: e.type }); }} className="text-blue-500 hover:text-blue-400"><Edit2 className="w-4 h-4" /></button><button onClick={() => setEmployees(employees.filter(emp => emp.id !== e.id))} className="text-red-400 hover:text-red-300"><XCircle className="w-4 h-4" /></button></td></tr>))}</tbody></table>
+                    <table className="w-full text-left">
+                      <thead>
+                        <tr className="border-b dark:border-gray-700 text-xs text-gray-400 dark:text-gray-500">
+                          <th className="py-4">Nome</th>
+                          <th className="py-4">Setor</th>
+                          <th className="py-4">Valor Hora HE</th>
+                          <th className="py-4 text-right">Ação</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filteredAndSortedEmployees.map(e => <EmployeeRow key={e.id} e={e} />)}
+                      </tbody>
+                    </table>
                 </div>
 
                 {/* Mobile View */}
                 <div className="md:hidden space-y-4">
-                    {employees.map(e => (
-                        <div key={e.id} className="bg-gray-50 dark:bg-gray-900 p-4 rounded-xl border border-gray-100 dark:border-gray-700 flex flex-col gap-2">
-                            <div className="flex justify-between items-start">
-                                <div>
-                                    <h4 className="font-bold text-gray-800 dark:text-gray-200 text-lg">{e.name}</h4>
-                                    <p className="text-xs text-gray-500 dark:text-gray-400 uppercase font-bold">{sectors.find(s => s.id === e.sectorId)?.name}</p>
+                    {filteredAndSortedEmployees.map(e => {
+                        const sector = sectors.find(s => s.id === e.sectorId);
+                        const salary = parseCurrency(e.salary);
+                        const monthlyHours = parseFloat(String(e.monthlyHours)) || 220;
+                        const hourlyBase = salary / monthlyHours;
+                        const overtimeRate = hourlyBase * 1.25;
+
+                        return (
+                            <div key={e.id} className="bg-gray-50 dark:bg-gray-900 p-4 rounded-xl border border-gray-100 dark:border-gray-700 flex flex-col gap-2">
+                                <div className="flex justify-between items-start">
+                                    <div>
+                                        <h4 className="font-bold text-gray-800 dark:text-gray-200 text-lg">{e.name}</h4>
+                                        <p className="text-xs text-gray-500 dark:text-gray-400 uppercase font-bold">{sector?.name}</p>
+                                    </div>
+                                    <div className="flex gap-2">
+                                        <button onClick={() => { setEditingEmployeeId(e.id); setNewEmpData({ name: e.name, sectorId: e.sectorId, salary: e.salary, monthlyHours: e.monthlyHours, type: e.type }); }} className="bg-white dark:bg-gray-800 p-2 rounded-lg text-blue-600 dark:text-blue-400 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700"><Edit2 className="w-5 h-5" /></button>
+                                        <button onClick={() => setEmployees(employees.filter(emp => emp.id !== e.id))} className="bg-white dark:bg-gray-800 p-2 rounded-lg text-red-500 dark:text-red-400 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700"><XCircle className="w-5 h-5" /></button>
+                                    </div>
                                 </div>
-                                <div className="flex gap-2">
-                                    <button onClick={() => { setEditingEmployeeId(e.id); setNewEmpData({ name: e.name, sectorId: e.sectorId, salary: e.salary, monthlyHours: e.monthlyHours, type: e.type }); }} className="bg-white dark:bg-gray-800 p-2 rounded-lg text-blue-600 dark:text-blue-400 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700"><Edit2 className="w-5 h-5" /></button>
-                                    <button onClick={() => setEmployees(employees.filter(emp => emp.id !== e.id))} className="bg-white dark:bg-gray-800 p-2 rounded-lg text-red-500 dark:text-red-400 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700"><XCircle className="w-5 h-5" /></button>
+                                <div className="flex items-center gap-2 mt-1">
+                                    <span className="text-sm text-gray-600 dark:text-gray-300 bg-white dark:bg-gray-800 px-2 py-1 rounded border dark:border-gray-700">{formatCurrency(salary)}</span>
+                                    <span className="text-sm text-gray-600 dark:text-gray-300 bg-white dark:bg-gray-800 px-2 py-1 rounded border dark:border-gray-700">{monthlyHours}h</span>
+                                    <span className="text-sm font-bold text-green-600 dark:text-green-400 ml-auto">{formatCurrency(overtimeRate)}/h HE</span>
+                                </div>
+                                <div className="mt-2 pt-2 border-t border-gray-200 dark:border-gray-700 text-[10px] text-gray-500 dark:text-gray-400 font-mono">
+                                    Cálculo: ({formatCurrency(salary)} / {monthlyHours}h) * 1.25 = {formatCurrency(overtimeRate)}
                                 </div>
                             </div>
-                            <div className="flex items-center gap-2 mt-1">
-                                <span className="text-sm text-gray-600 dark:text-gray-300 bg-white dark:bg-gray-800 px-2 py-1 rounded border dark:border-gray-700">R$ {e.salary}</span>
-                                <span className="text-sm text-gray-600 dark:text-gray-300 bg-white dark:bg-gray-800 px-2 py-1 rounded border dark:border-gray-700">{e.monthlyHours}h</span>
-                                <span className="text-sm font-bold text-green-600 dark:text-green-400 ml-auto">{formatCurrency((parseCurrency(e.salary) / (parseFloat(String(e.monthlyHours)) || 1)) * 1.25)}/h</span>
-                            </div>
-                        </div>
-                    ))}
+                        );
+                    })}
                 </div>
               </div>
             )}

@@ -26,15 +26,10 @@ export const parseCurrency = (value: any): number => {
 };
 
 export const formatCurrency = (value: any) => {
-  if (value === undefined || value === null || value === '' || isNaN(value)) return 'N/A';
+  if (value === undefined || value === null || value === '' || value === 'N/A') return 'R$ 0,00';
   const num = parseCurrency(value);
   
-  if (num === 0 || !isFinite(num)) {
-    const strVal = String(value).trim().replace(/[R$\s]/g, '');
-    if (strVal !== '0' && strVal !== '0,00' && strVal !== '0.00' && strVal !== '') {
-      return 'N/A';
-    }
-  }
+  if (!isFinite(num)) return 'R$ 0,00';
   
   return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(num);
 };
@@ -50,8 +45,9 @@ export const timeToDecimal = (time: any): number => {
 
 export const formatDecimalHours = (decimal: number): string => {
   if (isNaN(decimal) || !isFinite(decimal)) return '0h 00m';
-  const hours = Math.floor(decimal);
-  const minutes = Math.round((decimal - hours) * 60);
+  const totalMinutes = Math.round(decimal * 60);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
   return `${hours}h ${minutes.toString().padStart(2, '0')}m`;
 };
 
