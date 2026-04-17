@@ -13,39 +13,12 @@
         }
     </script>
     <style>
-        /* Bloqueio de impressão */
-        @media print {
-            body { display: none !important; }
-        }
-        /* Deterrente contra cópia e seleção */
-        body {
-            -webkit-user-select: none;
-            -moz-user-select: none;
-            -ms-user-select: none;
-            user-select: none;
-        }
         /* Estilo para inputs (conforme solicitado: fundo branco, texto preto) */
         input, select, textarea {
             background-color: white !important;
             color: black !important;
             -webkit-user-select: text;
             user-select: text;
-        }
-        /* Proteção visual quando a aba perde o foco (opcional, mas ajuda contra print externo) */
-        .privacy-overlay {
-            position: fixed;
-            inset: 0;
-            background: #1e293b;
-            z-index: 9999;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: white;
-            font-weight: bold;
-            display: none;
-        }
-        body.blurred .privacy-overlay {
-            display: flex;
         }
     </style>
 <script type="importmap">
@@ -63,12 +36,6 @@
 </head>
 <body class="bg-gray-50 text-gray-900">
     <div id="root"></div>
-    <div class="privacy-overlay">Conteúdo Protegido - Captura Proibida</div>
-    <script>
-        // Deterrente: Ofuscar conteúdo se a janela perder o foco
-        window.addEventListener('blur', () => document.body.classList.add('blurred'));
-        window.addEventListener('focus', () => document.body.classList.remove('blurred'));
-    </script>
 <script type="module" src="/index.tsx"></script>
 </body>
 </html>

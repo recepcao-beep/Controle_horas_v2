@@ -68,7 +68,7 @@ import {
 
 // Constantes
 const STORAGE_KEY = 'controle_horas_db_v3';
-const DEFAULT_SHEET_URL = 'https://docs.google.com/spreadsheets/d/1HRQ3L-iU-nYMKvKc3zcGoOw70uz8Sf0vfOiseMwlFWY/edit';
+const DEFAULT_SHEET_URL = 'https://docs.google.com/spreadsheets/d/1Ksam1nwTxzveH0BaWKftQnyDBuOBJYCX5A3FwmP9EnY/edit#gid=67462249';
 const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899'];
 
 const App: React.FC = () => {
@@ -456,7 +456,11 @@ const App: React.FC = () => {
       const spreadsheetId = extractSpreadsheetId(dbUrl);
       const response = await fetch('/api/sheets/sync', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          'Cache-Control': 'no-cache'
+        },
         body: JSON.stringify({
           spreadsheetId,
           sectors: currentData.sectors,
@@ -464,13 +468,24 @@ const App: React.FC = () => {
           requests: currentData.requests
         })
       });
+      
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || `Erro do servidor: ${response.status}`);
+      }
+
       const result = await response.json();
       if (!result.success) throw new Error(result.error || "Erro na sincronização via API");
     } catch (error: any) {
+      console.error("Erro detalhado de sincronização:", error);
+      
       if (error.message && error.message.includes('Conta de Serviço')) {
         setAlertMessage(error.message);
       } else if (error.message && error.message.includes('Planilha não encontrada')) {
         setAlertMessage(error.message);
+      } else {
+        // No iPhone, queremos ver o erro real se falhar
+        setAlertMessage(`Erro de Sincronização: ${error.message}. Verifique sua conexão ou se o app está em modo privado.`);
       }
       // Falha silenciosa na sincronização para outros erros, dados já estão no localStorage
     } finally {
@@ -502,7 +517,16 @@ const App: React.FC = () => {
         if (parsed.scriptUrl) setScriptUrl(parsed.scriptUrl);
         if (parsed.folderRegId) setFolderRegId(parsed.folderRegId);
         if (parsed.folderFixoId) setFolderFixoId(parsed.folderFixoId);
-        if (parsed.dbUrl) initialUrl = parsed.dbUrl;
+        if (parsed.dbUrl) {
+          // Se a URL salva for a antiga, forçamos a nova
+          if (parsed.dbUrl.includes('1HRQ3L-iU-nYMKvKc3zcGoOw70uz8Sf0vfOiseMwlFWY')) {
+            initialUrl = DEFAULT_SHEET_URL;
+            setDbUrl(DEFAULT_SHEET_URL);
+          } else {
+            initialUrl = parsed.dbUrl;
+            setDbUrl(parsed.dbUrl);
+          }
+        }
       } catch (e) {}
     }
     
@@ -546,13 +570,10 @@ const App: React.FC = () => {
 
   // --- Handlers ---
   const handleAdminLogin = () => {
-    if (adminPassword === '123') {
-      setIsAuth(true);
-      setState(prev => ({ ...prev, view: 'ADMIN' }));
-      setAdminPassword('');
-    } else {
-      setAlertMessage('Senha incorreta!');
-    }
+    // any password allows entry - as requested to "remove protection"
+    setIsAuth(true);
+    setState(prev => ({ ...prev, view: 'ADMIN' }));
+    setAdminPassword('');
   };
 
   const generateAccessLink = () => {
@@ -741,7 +762,12 @@ const App: React.FC = () => {
                         {req.records.map((r, idx) => (
                             <tr key={idx} className={`border-b border-gray-100 dark:border-gray-800 last:border-0 ${r.isFolgaVendida ? 'bg-blue-50/50 dark:bg-blue-900/10' : ''}`}>
                                 <td className="py-1.5 font-bold text-gray-600 dark:text-gray-400">
-                                    {new Date(r.date + 'T00:00:00').toLocaleDateString('pt-BR', { weekday: 'short' }).slice(0,3)}
+                                    {(() => {
+                                        // Safari friendly date parsing
+                                        const [year, month, day] = r.date.split('-');
+                                        const d = new Date(Number(year), Number(month) - 1, Number(day));
+                                        return d.toLocaleDateString('pt-BR', { weekday: 'short' }).slice(0,3);
+                                    })()}
                                     {r.isFolgaVendida && <span className="block text-[8px] text-blue-600 dark:text-blue-400 font-black">FOLGA</span>}
                                 </td>
                                 <td className="py-1.5 text-gray-700 dark:text-gray-300">{r.realEntry || '-'}</td>
