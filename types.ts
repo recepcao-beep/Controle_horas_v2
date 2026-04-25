@@ -25,6 +25,8 @@ export interface Employee {
   salary: number;
   monthlyHours: number;
   fixedDayOff?: number;
+  workRegime?: '6X1' | '12X36';
+  parityRef?: 'EVEN' | 'ODD';
 }
 
 export interface TimeRecord {

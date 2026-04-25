@@ -118,7 +118,16 @@ const App: React.FC = () => {
 
   // Estados Admin
   const [newSec, setNewSec] = useState({ name: '', fixedRate: 0 });
-  const [newEmpData, setNewEmpData] = useState({ name: '', sectorId: '', salary: 0, monthlyHours: 220, type: EmployeeType.REGISTRADO, fixedDayOff: undefined as number | undefined });
+  const [newEmpData, setNewEmpData] = useState({ 
+    name: '', 
+    sectorId: '', 
+    salary: 0, 
+    monthlyHours: 220, 
+    type: EmployeeType.REGISTRADO, 
+    fixedDayOff: undefined as number | undefined,
+    workRegime: '6X1' as '6X1' | '12X36',
+    parityRef: 'EVEN' as 'EVEN' | 'ODD'
+  });
   const [employeeSectorFilter, setEmployeeSectorFilter] = useState<string>('ALL');
   // Estado para controlar qual funcionário está sendo editado
   const [editingEmployeeId, setEditingEmployeeId] = useState<string | null>(null);
@@ -566,8 +575,26 @@ const App: React.FC = () => {
       
       setModalRecords(weekDays.map(date => {
         const [year, month, day] = date.split('-');
-        const dayOfWeek = new Date(Number(year), Number(month) - 1, Number(day)).getDay();
-        const isFolgaFixa = employee && employee.type === EmployeeType.REGISTRADO && employee.fixedDayOff === dayOfWeek;
+        const dateObj = new Date(Number(year), Number(month) - 1, Number(day));
+        const dayOfWeek = dateObj.getDay();
+        const dayOfMonth = dateObj.getDate();
+        
+        let isFolga = false;
+        if (employee && employee.type === EmployeeType.REGISTRADO) {
+           if (employee.workRegime === '12X36') {
+             const isEvenDay = dayOfMonth % 2 === 0;
+             if (employee.parityRef === 'EVEN') {
+               // Works even days -> Off on odd days
+               isFolga = !isEvenDay;
+             } else {
+               // Works odd days -> Off on even days
+               isFolga = isEvenDay;
+             }
+           } else {
+             // Default 6X1 (or missing regime)
+             isFolga = employee.fixedDayOff === dayOfWeek;
+           }
+        }
 
         return {
           date, 
@@ -575,7 +602,7 @@ const App: React.FC = () => {
           punchEntry: '', 
           punchExit: '', 
           realExit: '', 
-          isFolgaVendida: isFolgaFixa || false
+          isFolgaVendida: isFolga
         };
       }));
     }
@@ -903,8 +930,12 @@ const App: React.FC = () => {
               {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
               <div>
                 <span>{e.name}</span>
-                {e.fixedDayOff !== undefined && (
-                   <span className="block text-[8px] text-blue-500 uppercase tracking-wider font-black">Folga: {diasSemana[e.fixedDayOff]}</span>
+                {e.workRegime === '12X36' ? (
+                  <span className="block text-[8px] text-purple-500 uppercase tracking-wider font-black">12x36 - {e.parityRef === 'EVEN' ? 'Dias Pares' : 'Dias Ímpares'}</span>
+                ) : (
+                  e.fixedDayOff !== undefined && (
+                    <span className="block text-[8px] text-blue-500 uppercase tracking-wider font-black">6x1 - Folga: {diasSemana[e.fixedDayOff]}</span>
+                  )
                 )}
               </div>
             </button>
@@ -912,7 +943,7 @@ const App: React.FC = () => {
           <td className="py-4 dark:text-gray-300">{sector?.name}</td>
           <td className="py-4 dark:text-gray-300 font-bold text-blue-600 dark:text-blue-400">{formatCurrency(overtimeRate)}</td>
           <td className="py-4 text-right flex justify-end gap-2">
-            <button onClick={() => { setEditingEmployeeId(e.id); setNewEmpData({ name: e.name, sectorId: e.sectorId, salary: e.salary, monthlyHours: e.monthlyHours, type: e.type, fixedDayOff: e.fixedDayOff }); }} className="text-blue-500 hover:text-blue-400"><Edit2 className="w-4 h-4" /></button>
+            <button onClick={() => { setEditingEmployeeId(e.id); setNewEmpData({ name: e.name, sectorId: e.sectorId, salary: e.salary, monthlyHours: e.monthlyHours, type: e.type, fixedDayOff: e.fixedDayOff, workRegime: e.workRegime || '6X1', parityRef: e.parityRef || 'EVEN' }); }} className="text-blue-500 hover:text-blue-400"><Edit2 className="w-4 h-4" /></button>
             <button onClick={() => setEmployees(employees.filter(emp => emp.id !== e.id))} className="text-red-400 hover:text-red-300"><XCircle className="w-4 h-4" /></button>
           </td>
         </tr>
@@ -2184,39 +2215,63 @@ function testeManual() {
                     {sectors.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                   </select>
                 </div>
-                <div className="grid grid-cols-1 md:grid-cols-6 gap-4 bg-gray-50 dark:bg-gray-900 p-6 rounded-2xl">
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 bg-gray-50 dark:bg-gray-900 p-6 rounded-2xl">
                   <input type="text" placeholder="Nome" className="p-4 border dark:border-gray-700 rounded-xl bg-white dark:bg-gray-800 text-black dark:text-white text-base focus:border-blue-500 outline-none" value={newEmpData.name} onChange={(e) => setNewEmpData({ ...newEmpData, name: e.target.value })} />
                   <select className="p-4 border dark:border-gray-700 rounded-xl bg-white dark:bg-gray-800 text-black dark:text-white text-base focus:border-blue-500 outline-none" value={newEmpData.sectorId} onChange={(e) => setNewEmpData({ ...newEmpData, sectorId: e.target.value })}><option value="">Setor...</option>{sectors.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}</select>
                   <input type="number" placeholder="Salário" className="p-4 border dark:border-gray-700 rounded-xl bg-white dark:bg-gray-800 text-black dark:text-white text-base focus:border-blue-500 outline-none" value={newEmpData.salary || ''} onChange={(e) => setNewEmpData({ ...newEmpData, salary: parseFloat(e.target.value) })} />
                   <input type="number" placeholder="Horas" className="p-4 border dark:border-gray-700 rounded-xl bg-white dark:bg-gray-800 text-black dark:text-white text-base focus:border-blue-500 outline-none" value={newEmpData.monthlyHours || ''} onChange={(e) => setNewEmpData({ ...newEmpData, monthlyHours: parseFloat(e.target.value) })} />
-                  <select 
-                    className="p-4 border dark:border-gray-700 rounded-xl bg-white dark:bg-gray-800 text-black dark:text-white text-base focus:border-blue-500 outline-none" 
-                    value={newEmpData.fixedDayOff === undefined ? '' : newEmpData.fixedDayOff} 
-                    onChange={(e) => setNewEmpData({ ...newEmpData, fixedDayOff: e.target.value === '' ? undefined : parseInt(e.target.value) })}
-                  >
-                    <option value="">Folga Fixa...</option>
-                    {['Domingo', 'Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'].map((day, i) => <option key={i} value={i}>{day}</option>)}
-                  </select>
-                  <div className="flex gap-2">
-                    <button 
-                      onClick={() => { 
-                        if(newEmpData.name) { 
-                          if (editingEmployeeId) {
-                            setEmployees(employees.map(e => e.id === editingEmployeeId ? { ...e, ...newEmpData } : e));
-                            setEditingEmployeeId(null);
-                          } else {
-                            setEmployees([...employees, {...newEmpData, id: Math.random().toString(36).substr(2, 9)}]); 
-                          }
-                          setNewEmpData({name: '', sectorId: '', salary: 0, monthlyHours: 220, type: EmployeeType.REGISTRADO, fixedDayOff: undefined}); 
-                        } 
-                      }} 
-                      className={`${editingEmployeeId ? 'bg-green-600' : 'bg-blue-600'} text-white font-bold rounded-xl flex-1 py-3 active:scale-95 transition`}
+                  
+                  <div className="md:col-span-2 lg:col-span-4 grid grid-cols-1 md:grid-cols-3 gap-4 border-t dark:border-gray-700 pt-4 mt-2">
+                    <select 
+                      className="p-4 border dark:border-gray-700 rounded-xl bg-white dark:bg-gray-800 text-black dark:text-white text-base focus:border-blue-500 outline-none" 
+                      value={newEmpData.workRegime || '6X1'} 
+                      onChange={(e) => setNewEmpData({ ...newEmpData, workRegime: e.target.value as '6X1' | '12X36' })}
                     >
-                      {editingEmployeeId ? 'Salvar' : 'Add'}
-                    </button>
-                    {editingEmployeeId && (
-                      <button onClick={() => { setEditingEmployeeId(null); setNewEmpData({name: '', sectorId: '', salary: 0, monthlyHours: 220, type: EmployeeType.REGISTRADO, fixedDayOff: undefined}); }} className="bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-300 font-bold rounded-xl px-3 hover:bg-gray-300 dark:hover:bg-gray-600 transition"><XCircle className="w-5 h-5" /></button>
+                      <option value="6X1">Regime 6x1</option>
+                      <option value="12X36">Regime 12x36</option>
+                    </select>
+
+                    {newEmpData.workRegime === '6X1' ? (
+                      <select 
+                        className="p-4 border dark:border-gray-700 rounded-xl bg-white dark:bg-gray-800 text-black dark:text-white text-base focus:border-blue-500 outline-none" 
+                        value={newEmpData.fixedDayOff === undefined ? '' : newEmpData.fixedDayOff} 
+                        onChange={(e) => setNewEmpData({ ...newEmpData, fixedDayOff: e.target.value === '' ? undefined : parseInt(e.target.value) })}
+                      >
+                        <option value="">Folga Fixa...</option>
+                        {['Domingo', 'Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'].map((day, i) => <option key={i} value={i}>{day}</option>)}
+                      </select>
+                    ) : (
+                      <select 
+                        className="p-4 border dark:border-gray-700 rounded-xl bg-white dark:bg-gray-800 text-black dark:text-white text-base focus:border-blue-500 outline-none" 
+                        value={newEmpData.parityRef || 'EVEN'} 
+                        onChange={(e) => setNewEmpData({ ...newEmpData, parityRef: e.target.value as 'EVEN' | 'ODD' })}
+                      >
+                        <option value="EVEN">Trabalha Dias PARES (Folga Ímpar)</option>
+                        <option value="ODD">Trabalha Dias ÍMPARES (Folga Par)</option>
+                      </select>
                     )}
+
+                    <div className="flex gap-2">
+                      <button 
+                        onClick={() => { 
+                          if(newEmpData.name) { 
+                            if (editingEmployeeId) {
+                              setEmployees(employees.map(e => e.id === editingEmployeeId ? { ...e, ...newEmpData } : e));
+                              setEditingEmployeeId(null);
+                            } else {
+                              setEmployees([...employees, {...newEmpData, id: Math.random().toString(36).substr(2, 9)}]); 
+                            }
+                            setNewEmpData({name: '', sectorId: '', salary: 0, monthlyHours: 220, type: EmployeeType.REGISTRADO, fixedDayOff: undefined, workRegime: '6X1', parityRef: 'EVEN'}); 
+                          } 
+                        }} 
+                        className={`${editingEmployeeId ? 'bg-green-600' : 'bg-blue-600'} text-white font-bold rounded-xl flex-1 py-3 active:scale-95 transition`}
+                      >
+                        {editingEmployeeId ? 'Salvar' : 'Add'}
+                      </button>
+                      {editingEmployeeId && (
+                        <button onClick={() => { setEditingEmployeeId(null); setNewEmpData({name: '', sectorId: '', salary: 0, monthlyHours: 220, type: EmployeeType.REGISTRADO, fixedDayOff: undefined, workRegime: '6X1', parityRef: 'EVEN'}); }} className="bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-300 font-bold rounded-xl px-3 hover:bg-gray-300 dark:hover:bg-gray-600 transition"><XCircle className="w-5 h-5" /></button>
+                      )}
+                    </div>
                   </div>
                 </div>
                 
@@ -2252,12 +2307,16 @@ function testeManual() {
                                     <div>
                                         <h4 className="font-bold text-gray-800 dark:text-gray-200 text-lg">{e.name}</h4>
                                         <p className="text-xs text-gray-500 dark:text-gray-400 uppercase font-bold">{sector?.name}</p>
-                                        {e.fixedDayOff !== undefined && (
-                                           <p className="text-[10px] text-blue-600 dark:text-blue-400 font-black uppercase tracking-tighter">Folga Fixa: {['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'][e.fixedDayOff]}</p>
+                                        {e.workRegime === '12X36' ? (
+                                           <p className="text-[10px] text-purple-600 dark:text-purple-400 font-black uppercase tracking-tighter">Regime: 12x36 ({e.parityRef === 'EVEN' ? 'Pares' : 'Ímpares'})</p>
+                                        ) : (
+                                          e.fixedDayOff !== undefined && (
+                                            <p className="text-[10px] text-blue-600 dark:text-blue-400 font-black uppercase tracking-tighter">Folga Fixa: {['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'][e.fixedDayOff]}</p>
+                                          )
                                         )}
                                     </div>
                                     <div className="flex gap-2">
-                                        <button onClick={() => { setEditingEmployeeId(e.id); setNewEmpData({ name: e.name, sectorId: e.sectorId, salary: e.salary, monthlyHours: e.monthlyHours, type: e.type, fixedDayOff: e.fixedDayOff }); }} className="bg-white dark:bg-gray-800 p-2 rounded-lg text-blue-600 dark:text-blue-400 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700"><Edit2 className="w-5 h-5" /></button>
+                                        <button onClick={() => { setEditingEmployeeId(e.id); setNewEmpData({ name: e.name, sectorId: e.sectorId, salary: e.salary, monthlyHours: e.monthlyHours, type: e.type, fixedDayOff: e.fixedDayOff, workRegime: e.workRegime || '6X1', parityRef: e.parityRef || 'EVEN' }); }} className="bg-white dark:bg-gray-800 p-2 rounded-lg text-blue-600 dark:text-blue-400 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700"><Edit2 className="w-5 h-5" /></button>
                                         <button onClick={() => setEmployees(employees.filter(emp => emp.id !== e.id))} className="bg-white dark:bg-gray-800 p-2 rounded-lg text-red-500 dark:text-red-400 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700"><XCircle className="w-5 h-5" /></button>
                                     </div>
                                 </div>
