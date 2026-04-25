@@ -32,7 +32,8 @@ import {
   FileText,
   Grid,
   List,
-  Printer
+  Printer,
+  Save
 } from 'lucide-react';
 import { 
   BarChart, 
@@ -80,6 +81,8 @@ const App: React.FC = () => {
   const [scriptUrl, setScriptUrl] = useState('https://script.google.com/macros/s/AKfycby3TJGwqYjXMWyysi7CgHeNI48Kpmr8fCeFv3Ozr7252RvxdcNwlaNoRkgJYZHb2Il8/exec');
   const [folderRegId, setFolderRegId] = useState('1OGOxVmi2nEwI47HP9l48VdVBKQeJTVqm');
   const [folderFixoId, setFolderFixoId] = useState('1RzzDCHznw97QxwDLh_qvf8NE8yKPNdWU');
+  const [overtimeMultiplier, setOvertimeMultiplier] = useState(1.25);
+  const [valeTransporteValue, setValeTransporteValue] = useState(12.0);
   
   const extractFolderId = (input: string) => {
     if (!input) return '';
@@ -256,6 +259,12 @@ const App: React.FC = () => {
         setSectors(uniqueSectors);
         setEmployees(uniqueEmployees);
         setRequests(uniqueRequests);
+        
+        if (data.config) {
+          if (data.config.overtimeMultiplier) setOvertimeMultiplier(parseFloat(data.config.overtimeMultiplier));
+          if (data.config.valeTransporteValue) setValeTransporteValue(parseFloat(data.config.valeTransporteValue));
+        }
+
         if (urlToUse) setDbUrl(urlToUse);
         
         lastSyncedDataRef.current = JSON.stringify({
@@ -451,7 +460,7 @@ const App: React.FC = () => {
     setIsSyncing(true);
 
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...currentData, dbUrl, scriptUrl, folderRegId, folderFixoId }));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...currentData, dbUrl, scriptUrl, folderRegId, folderFixoId, overtimeMultiplier, valeTransporteValue }));
       
       const spreadsheetId = extractSpreadsheetId(dbUrl);
       const response = await fetch('/api/sheets/sync', {
@@ -465,7 +474,11 @@ const App: React.FC = () => {
           spreadsheetId,
           sectors: currentData.sectors,
           employees: currentData.employees,
-          requests: currentData.requests
+          requests: currentData.requests,
+          config: {
+            overtimeMultiplier,
+            valeTransporteValue
+          }
         })
       });
       
@@ -517,6 +530,8 @@ const App: React.FC = () => {
         if (parsed.scriptUrl) setScriptUrl(parsed.scriptUrl);
         if (parsed.folderRegId) setFolderRegId(parsed.folderRegId);
         if (parsed.folderFixoId) setFolderFixoId(parsed.folderFixoId);
+        if (parsed.overtimeMultiplier) setOvertimeMultiplier(parsed.overtimeMultiplier);
+        if (parsed.valeTransporteValue) setValeTransporteValue(parsed.valeTransporteValue);
         if (parsed.dbUrl) {
           // Se a URL salva for a antiga, forçamos a nova
           if (parsed.dbUrl.includes('1HRQ3L-iU-nYMKvKc3zcGoOw70uz8Sf0vfOiseMwlFWY')) {
@@ -563,10 +578,12 @@ const App: React.FC = () => {
         dbUrl,
         scriptUrl,
         folderRegId,
-        folderFixoId
+        folderFixoId,
+        overtimeMultiplier,
+        valeTransporteValue
       }));
     }
-  }, [dbUrl, scriptUrl, folderRegId, folderFixoId, isInitialLoad]);
+  }, [dbUrl, scriptUrl, folderRegId, folderFixoId, overtimeMultiplier, valeTransporteValue, isInitialLoad]);
 
   // --- Handlers ---
   const handleAdminLogin = () => {
@@ -613,7 +630,7 @@ const App: React.FC = () => {
       const salary = parseCurrency(employee.salary);
       const monthlyHours = parseFloat(String(employee.monthlyHours)) || 220;
       const hourlyBase = salary / monthlyHours;
-      const overtimeRate = hourlyBase * 1.25;
+      const overtimeRate = hourlyBase * overtimeMultiplier;
       
       modalRecords.forEach(r => {
         let dailyHours = 0;
@@ -645,8 +662,8 @@ const App: React.FC = () => {
         
         if (dailyHours > 0) {
           totalDiffHours += dailyHours;
-          // HE-REGISTRADO não tem vale transporte (+R$12,00 por dia) só o HE-FIXO
-          totalPayment += (dailyHours * overtimeRate) + (targetFlowType === EmployeeType.FIXO ? 12 : 0);
+          // HE-REGISTRADO não tem vale transporte só o HE-FIXO
+          totalPayment += (dailyHours * overtimeRate) + (targetFlowType === EmployeeType.FIXO ? valeTransporteValue : 0);
         }
       });
     } else {
@@ -658,8 +675,8 @@ const App: React.FC = () => {
           let dailyHours = end - start;
           if (dailyHours < 0) dailyHours += 24;
           if (dailyHours > 0) {
-            // HE-FIXO tem vale transporte (+R$12,00 por dia)
-            totalPayment += (dailyHours * hourlyRate) + 12;
+            // HE-FIXO tem vale transporte
+            totalPayment += (dailyHours * hourlyRate) + valeTransporteValue;
             totalDiffHours += dailyHours;
           }
         }
@@ -795,14 +812,14 @@ const App: React.FC = () => {
                                 const salary = parseCurrency(employee?.salary);
                                 const monthlyHours = parseFloat(String(employee?.monthlyHours)) || 220;
                                 const hourlyBase = salary / monthlyHours;
-                                const overtimeRate = hourlyBase * 1.25;
+                                const overtimeRate = hourlyBase * overtimeMultiplier;
                                 const hoursTotal = req.totalTimeDecimal * overtimeRate;
-                                const bonusTotal = daysWorked * 12;
+                                const bonusTotal = daysWorked * valeTransporteValue;
 
                                 return (
                                     <>
                                         <div className="flex justify-between"><span>Base:</span><span>{formatCurrency(salary)} / {monthlyHours}h = {formatCurrency(hourlyBase)}/h</span></div>
-                                        <div className="flex justify-between text-blue-600 dark:text-blue-400 font-bold"><span>HE (+25%):</span><span>{formatCurrency(overtimeRate)}/h</span></div>
+                                        <div className="flex justify-between text-blue-600 dark:text-blue-400 font-bold"><span>HE (+{Math.round((overtimeMultiplier - 1) * 100)}%):</span><span>{formatCurrency(overtimeRate)}/h</span></div>
                                         <div className="flex justify-between pt-1 border-t border-blue-100 dark:border-blue-800"><span>Horas:</span><span>{formatDecimalHours(req.totalTimeDecimal)} × {formatCurrency(overtimeRate)} = {formatCurrency(hoursTotal)}</span></div>
                                     </>
                                 );
@@ -815,7 +832,7 @@ const App: React.FC = () => {
                                     <>
                                         <div className="flex justify-between"><span>Valor Fixo:</span><span>{formatCurrency(hourlyRate)}/h</span></div>
                                         <div className="flex justify-between pt-1 border-t border-blue-100 dark:border-blue-800"><span>Horas:</span><span>{formatDecimalHours(req.totalTimeDecimal)} × {formatCurrency(hourlyRate)} = {formatCurrency(hoursTotal)}</span></div>
-                                        <div className="flex justify-between"><span>Vale Transporte:</span><span>{daysWorked} dias × R$ 12,00 = {formatCurrency(bonusTotal)}</span></div>
+                                        <div className="flex justify-between"><span>Vale Transporte:</span><span>{daysWorked} dias × {formatCurrency(valeTransporteValue)} = {formatCurrency(bonusTotal)}</span></div>
                                     </>
                                 );
                             }
@@ -863,7 +880,7 @@ const App: React.FC = () => {
     const salary = parseCurrency(e.salary);
     const monthlyHours = parseFloat(String(e.monthlyHours)) || 220;
     const hourlyBase = salary / monthlyHours;
-    const overtimeRate = hourlyBase * 1.25;
+    const overtimeRate = hourlyBase * overtimeMultiplier;
 
     return (
       <>
@@ -898,7 +915,7 @@ const App: React.FC = () => {
                         <span>{formatCurrency(hourlyBase)}</span>
                       </div>
                       <div className="flex justify-between font-bold text-blue-600 dark:text-blue-400">
-                        <span>HE (+25%):</span>
+                        <span>HE (+{Math.round((overtimeMultiplier - 1) * 100)}%):</span>
                         <span>{formatCurrency(overtimeRate)}</span>
                       </div>
                     </>
@@ -909,7 +926,7 @@ const App: React.FC = () => {
                         <span>{formatCurrency(parseCurrency(sector?.fixedRate))}</span>
                       </div>
                       <div className="pt-2 mt-2 border-t border-blue-100 dark:border-blue-800 text-[9px] text-gray-500 dark:text-gray-400 italic">
-                        * + R$ 12,00/dia (Vale Transporte) no fechamento.
+                        * + {formatCurrency(valeTransporteValue)}/dia (Vale Transporte) no fechamento.
                       </div>
                     </>
                   )}
@@ -2062,7 +2079,57 @@ function testeManual() {
 
             {state.adminSubView === 'SECTORS' && (
               <div className="bg-white dark:bg-gray-800 p-6 md:p-8 rounded-3xl border border-gray-100 dark:border-gray-700 space-y-8">
-                <h2 className="text-2xl font-bold dark:text-white">Setores</h2>
+                <div className="flex justify-between items-center">
+                  <h2 className="text-2xl font-bold dark:text-white">Setores</h2>
+                </div>
+
+                <div className="p-6 bg-blue-50/50 dark:bg-blue-900/10 border border-blue-100 dark:border-blue-900 rounded-3xl space-y-6">
+                  <div className="flex items-center gap-3 mb-2">
+                    <div className="bg-blue-600 p-2 rounded-lg shadow-sm">
+                      <Settings className="w-5 h-5 text-white" />
+                    </div>
+                    <h3 className="font-black text-lg text-gray-800 dark:text-gray-100 uppercase tracking-tight">Configurações Globais de Cálculos</h3>
+                  </div>
+                  
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div className="space-y-2">
+                      <label className="block text-xs font-black text-gray-400 dark:text-gray-500 uppercase tracking-widest">Multiplicador HE (Ex: 1.25 = 25%)</label>
+                      <input 
+                        type="number" 
+                        step="0.01"
+                        className="w-full p-4 border-2 border-gray-100 dark:border-gray-700 rounded-2xl bg-white dark:bg-gray-800 text-black dark:text-white outline-none focus:border-blue-500 font-bold text-lg transition-all" 
+                        value={overtimeMultiplier} 
+                        onChange={(e) => setOvertimeMultiplier(parseFloat(e.target.value) || 0)} 
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="block text-xs font-black text-gray-400 dark:text-gray-500 uppercase tracking-widest">Vale Transporte (Diário)</label>
+                      <div className="relative">
+                        <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 font-bold text-lg">R$</span>
+                        <input 
+                          type="number" 
+                          step="0.1"
+                          className="w-full p-4 pl-12 border-2 border-gray-100 dark:border-gray-700 rounded-2xl bg-white dark:bg-gray-800 text-black dark:text-white outline-none focus:border-blue-500 font-bold text-lg transition-all" 
+                          value={valeTransporteValue} 
+                          onChange={(e) => setValeTransporteValue(parseFloat(e.target.value) || 0)} 
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <button 
+                    onClick={() => {
+                      if (window.confirm('CONFIRMAR ALTERAÇÃO GLOBAL?\n\nEsta mudança afetará todos os cálculos e será sincronizada em todos os dispositivos.')) {
+                        syncDatabase({ sectors, employees, requests });
+                        setAlertMessage('Configurações globais salvas e sincronizadas com sucesso!');
+                      }
+                    }}
+                    className="w-full bg-blue-600 text-white font-black py-4 rounded-2xl hover:bg-blue-700 active:scale-[0.98] transition-all shadow-lg shadow-blue-200 dark:shadow-none flex items-center justify-center gap-3 uppercase tracking-tighter"
+                  >
+                    <Save className="w-5 h-5" /> Aplicar Alterações em Todos os Dispositivos
+                  </button>
+                </div>
+
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4 bg-gray-50 dark:bg-gray-900 p-6 rounded-2xl">
                   <input type="text" placeholder="Nome" className="p-4 border dark:border-gray-700 rounded-xl bg-white dark:bg-gray-800 text-black dark:text-white text-base focus:border-blue-500 outline-none" value={newSec.name} onChange={(e) => setNewSec({ ...newSec, name: e.target.value })} />
                   <input type="number" placeholder="Valor Hora" className="p-4 border dark:border-gray-700 rounded-xl bg-white dark:bg-gray-800 text-black dark:text-white text-base focus:border-blue-500 outline-none" value={newSec.fixedRate || ''} onChange={(e) => setNewSec({ ...newSec, fixedRate: parseFloat(e.target.value) })} />
@@ -2151,7 +2218,7 @@ function testeManual() {
                         const salary = parseCurrency(e.salary);
                         const monthlyHours = parseFloat(String(e.monthlyHours)) || 220;
                         const hourlyBase = salary / monthlyHours;
-                        const overtimeRate = hourlyBase * 1.25;
+                        const overtimeRate = hourlyBase * overtimeMultiplier;
 
                         return (
                             <div key={e.id} className="bg-gray-50 dark:bg-gray-900 p-4 rounded-xl border border-gray-100 dark:border-gray-700 flex flex-col gap-2">
@@ -2171,7 +2238,7 @@ function testeManual() {
                                     <span className="text-sm font-bold text-green-600 dark:text-green-400 ml-auto">{formatCurrency(overtimeRate)}/h HE</span>
                                 </div>
                                 <div className="mt-2 pt-2 border-t border-gray-200 dark:border-gray-700 text-[10px] text-gray-500 dark:text-gray-400 font-mono">
-                                    Cálculo: ({formatCurrency(salary)} / {monthlyHours}h) * 1.25 = {formatCurrency(overtimeRate)}
+                                    Cálculo: ({formatCurrency(salary)} / {monthlyHours}h) * {overtimeMultiplier} = {formatCurrency(overtimeRate)}
                                 </div>
                             </div>
                         );

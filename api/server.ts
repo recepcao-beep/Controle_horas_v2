@@ -67,7 +67,7 @@ app.get('/api/sheets/load', async (req, res) => {
     const sheetNames = response.data.sheets?.map(s => s.properties?.title || '') || [];
     console.log(`[API] Found sheets:`, sheetNames);
     
-    const ranges = ['Setores!A:Z', 'Funcionarios!A:Z', 'Solicitacoes!A:Z'];
+    const ranges = ['Setores!A:Z', 'Funcionarios!A:Z', 'Solicitacoes!A:Z', 'Config!A:Z'];
     
     // Filter ranges to only those that exist (case-insensitive and trimming spaces)
     const existingRanges = ranges.filter(r => {
@@ -78,7 +78,7 @@ app.get('/api/sheets/load', async (req, res) => {
 
     if (existingRanges.length === 0) {
       console.log(`[API] No matching sheets found. Returning empty data.`);
-      return res.json({ sectors: [], employees: [], requests: [] });
+      return res.json({ sectors: [], employees: [], requests: [], config: {} });
     }
 
     const valuesResponse = await sheets.spreadsheets.values.batchGet({
@@ -115,10 +115,17 @@ app.get('/api/sheets/load', async (req, res) => {
       return parsed;
     };
 
+    const configData = parseSheet('Config');
+    const config: any = {};
+    configData.forEach((item: any) => {
+      if (item.key) config[item.key] = item.value;
+    });
+
     res.json({
       sectors: parseSheet('Setores'),
       employees: parseSheet('Funcionarios'),
       requests: parseSheet('Solicitacoes'),
+      config
     });
   } catch (error: any) {
     console.error('[API] Error loading sheets data:', error);
@@ -135,7 +142,7 @@ app.get('/api/sheets/load', async (req, res) => {
 });
 
 app.post('/api/sheets/sync', async (req, res) => {
-  const { spreadsheetId, sectors, employees, requests } = req.body;
+  const { spreadsheetId, sectors, employees, requests, config } = req.body;
 
   if (!spreadsheetId) return res.status(400).json({ error: 'Spreadsheet ID is required' });
 
@@ -170,6 +177,11 @@ app.post('/api/sheets/sync', async (req, res) => {
       { range: 'Funcionarios!A1', values: prepareData(employees) },
       { range: 'Solicitacoes!A1', values: prepareData(sortedRequests) },
     ].filter(d => d.values.length > 0);
+
+    if (config) {
+      const configRows = Object.entries(config).map(([key, value]) => ({ key, value }));
+      data.push({ range: 'Config!A1', values: prepareData(configRows) });
+    }
 
     // Clear and update
     for (const d of data) {
