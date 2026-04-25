@@ -454,13 +454,14 @@ const App: React.FC = () => {
     }
   };
 
-  const syncDatabase = useCallback(async (currentData: { sectors: Sector[], employees: Employee[], requests: TimeRequest[] }) => {
+  const syncDatabase = useCallback(async (currentData: { sectors: Sector[], employees: Employee[], requests: TimeRequest[] }, explicitConfig?: { overtimeMultiplier: number, valeTransporteValue: number }) => {
     if (!dbUrl) return;
 
     setIsSyncing(true);
+    const configToSync = explicitConfig || { overtimeMultiplier, valeTransporteValue };
 
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...currentData, dbUrl, scriptUrl, folderRegId, folderFixoId, overtimeMultiplier, valeTransporteValue }));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...currentData, dbUrl, scriptUrl, folderRegId, folderFixoId, overtimeMultiplier: configToSync.overtimeMultiplier, valeTransporteValue: configToSync.valeTransporteValue }));
       
       const spreadsheetId = extractSpreadsheetId(dbUrl);
       const response = await fetch('/api/sheets/sync', {
@@ -475,10 +476,7 @@ const App: React.FC = () => {
           sectors: currentData.sectors,
           employees: currentData.employees,
           requests: currentData.requests,
-          config: {
-            overtimeMultiplier,
-            valeTransporteValue
-          }
+          config: configToSync
         })
       });
       
@@ -553,7 +551,7 @@ const App: React.FC = () => {
       const currentDataString = JSON.stringify({ sectors, employees, requests, overtimeMultiplier, valeTransporteValue });
       if (currentDataString !== lastSyncedDataRef.current) {
         const timer = setTimeout(() => {
-          syncDatabase({ sectors, employees, requests });
+          syncDatabase({ sectors, employees, requests }, { overtimeMultiplier, valeTransporteValue });
           lastSyncedDataRef.current = currentDataString;
         }, 1500);
         return () => clearTimeout(timer);
@@ -2140,7 +2138,7 @@ function testeManual() {
                   <button 
                     onClick={() => {
                       if (window.confirm('CONFIRMAR ALTERAÇÃO GLOBAL?\n\nEsta mudança afetará todos os cálculos e será sincronizada em todos os dispositivos.')) {
-                        syncDatabase({ sectors, employees, requests });
+                        syncDatabase({ sectors, employees, requests }, { overtimeMultiplier, valeTransporteValue });
                         setAlertMessage('Configurações globais salvas e sincronizadas com sucesso!');
                       }
                     }}

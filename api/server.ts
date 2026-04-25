@@ -189,13 +189,19 @@ app.post('/api/sheets/sync', async (req, res) => {
       return (a.employeeName || "").localeCompare(b.employeeName || "");
     });
 
+    // Find exact sheet names to avoid case-sensitivity issues during clear/update
+    const getExactName = (name: string) => {
+      const match = existingSheetNames.find(sn => sn.toLowerCase().trim() === name.toLowerCase().trim());
+      return match || name;
+    };
+
     const configRows = config ? Object.entries(config).map(([key, value]) => ({ key, value })) : [];
 
     const syncItems = [
-      { sheet: 'Setores', range: 'Setores!A1', values: prepareData(sectors) },
-      { sheet: 'Funcionarios', range: 'Funcionarios!A1', values: prepareData(employees) },
-      { sheet: 'Solicitacoes', range: 'Solicitacoes!A1', values: prepareData(sortedRequests) },
-      { sheet: 'Config', range: 'Config!A1', values: prepareData(configRows) }
+      { sheet: getExactName('Setores'), values: prepareData(sectors) },
+      { sheet: getExactName('Funcionarios'), values: prepareData(employees) },
+      { sheet: getExactName('Solicitacoes'), values: prepareData(sortedRequests) },
+      { sheet: getExactName('Config'), values: prepareData(configRows) }
     ];
 
     // Clear all target sheets first to ensure deletions are reflected
@@ -203,7 +209,7 @@ app.post('/api/sheets/sync', async (req, res) => {
       try {
         await sheets.spreadsheets.values.clear({
           spreadsheetId,
-          range: `${item.sheet}!A:Z`,
+          range: `'${item.sheet}'!A:Z`,
         });
       } catch (e) {
         console.warn(`[Sync] Could not clear sheet ${item.sheet}:`, (e as any).message);
@@ -213,7 +219,7 @@ app.post('/api/sheets/sync', async (req, res) => {
     // Filter out empty data for update
     const updateData = syncItems
       .filter(item => item.values.length > 0)
-      .map(item => ({ range: item.range, values: item.values }));
+      .map(item => ({ range: `'${item.sheet}'!A1`, values: item.values }));
 
     if (updateData.length > 0) {
       await sheets.spreadsheets.values.batchUpdate({
