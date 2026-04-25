@@ -154,12 +154,29 @@ app.post('/api/sheets/sync', async (req, res) => {
     const auth = getGoogleAuth();
     const sheets = google.sheets({ version: 'v4', auth });
     
+    // Ensure sheets exist
+    const ssInfo = await sheets.spreadsheets.get({ spreadsheetId });
+    const existingSheetNames = ssInfo.data.sheets?.map(s => s.properties?.title || '') || [];
+    const requiredSheets = ['Setores', 'Funcionarios', 'Solicitacoes', 'Config', 'HE - REGISTRADO', 'HE - FIXO'];
+    const sheetsToCreate = requiredSheets.filter(rs => !existingSheetNames.includes(rs));
+
+    if (sheetsToCreate.length > 0) {
+      await sheets.spreadsheets.batchUpdate({
+        spreadsheetId,
+        requestBody: {
+          requests: sheetsToCreate.map(title => ({
+            addSheet: { properties: { title } }
+          }))
+        }
+      });
+    }
+
     const prepareData = (data: any[]) => {
-      if (data.length === 0) return [];
+      if (!data || data.length === 0) return [];
       const headers = Object.keys(data[0]);
       const rows = data.map(item => headers.map(h => {
         const val = item[h];
-        return (typeof val === 'object') ? JSON.stringify(val) : val;
+        return (val !== null && typeof val === 'object') ? JSON.stringify(val) : val;
       }));
       return [headers, ...rows];
     };
@@ -172,33 +189,41 @@ app.post('/api/sheets/sync', async (req, res) => {
       return (a.employeeName || "").localeCompare(b.employeeName || "");
     });
 
-    const data = [
-      { range: 'Setores!A1', values: prepareData(sectors) },
-      { range: 'Funcionarios!A1', values: prepareData(employees) },
-      { range: 'Solicitacoes!A1', values: prepareData(sortedRequests) },
-    ].filter(d => d.values.length > 0);
+    const configRows = config ? Object.entries(config).map(([key, value]) => ({ key, value })) : [];
 
-    if (config) {
-      const configRows = Object.entries(config).map(([key, value]) => ({ key, value }));
-      data.push({ range: 'Config!A1', values: prepareData(configRows) });
+    const syncItems = [
+      { sheet: 'Setores', range: 'Setores!A1', values: prepareData(sectors) },
+      { sheet: 'Funcionarios', range: 'Funcionarios!A1', values: prepareData(employees) },
+      { sheet: 'Solicitacoes', range: 'Solicitacoes!A1', values: prepareData(sortedRequests) },
+      { sheet: 'Config', range: 'Config!A1', values: prepareData(configRows) }
+    ];
+
+    // Clear all target sheets first to ensure deletions are reflected
+    for (const item of syncItems) {
+      try {
+        await sheets.spreadsheets.values.clear({
+          spreadsheetId,
+          range: `${item.sheet}!A:Z`,
+        });
+      } catch (e) {
+        console.warn(`[Sync] Could not clear sheet ${item.sheet}:`, (e as any).message);
+      }
     }
 
-    // Clear and update
-    for (const d of data) {
-      const sheetName = d.range.split('!')[0];
-      await sheets.spreadsheets.values.clear({
+    // Filter out empty data for update
+    const updateData = syncItems
+      .filter(item => item.values.length > 0)
+      .map(item => ({ range: item.range, values: item.values }));
+
+    if (updateData.length > 0) {
+      await sheets.spreadsheets.values.batchUpdate({
         spreadsheetId,
-        range: `${sheetName}!A:Z`,
+        requestBody: {
+          valueInputOption: 'RAW',
+          data: updateData,
+        },
       });
     }
-
-    await sheets.spreadsheets.values.batchUpdate({
-      spreadsheetId,
-      requestBody: {
-        valueInputOption: 'RAW',
-        data,
-      },
-    });
 
     // Distribute data to HE - REGISTRADO and HE - FIXO
     try {

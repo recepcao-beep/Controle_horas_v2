@@ -24,6 +24,7 @@ export interface Employee {
   type: EmployeeType;
   salary: number;
   monthlyHours: number;
+  fixedDayOff?: number;
 }
 
 export interface TimeRecord {

@@ -118,7 +118,7 @@ const App: React.FC = () => {
 
   // Estados Admin
   const [newSec, setNewSec] = useState({ name: '', fixedRate: 0 });
-  const [newEmpData, setNewEmpData] = useState({ name: '', sectorId: '', salary: 0, monthlyHours: 220, type: EmployeeType.REGISTRADO });
+  const [newEmpData, setNewEmpData] = useState({ name: '', sectorId: '', salary: 0, monthlyHours: 220, type: EmployeeType.REGISTRADO, fixedDayOff: undefined as number | undefined });
   const [employeeSectorFilter, setEmployeeSectorFilter] = useState<string>('ALL');
   // Estado para controlar qual funcionário está sendo editado
   const [editingEmployeeId, setEditingEmployeeId] = useState<string | null>(null);
@@ -504,7 +504,7 @@ const App: React.FC = () => {
     } finally {
       setIsSyncing(false);
     }
-  }, [dbUrl, scriptUrl, folderRegId, folderFixoId, isAuth]);
+  }, [dbUrl, scriptUrl, folderRegId, folderFixoId, isAuth, overtimeMultiplier, valeTransporteValue]);
 
   useEffect(() => {
     if (hasLoadedRef.current) return;
@@ -550,7 +550,7 @@ const App: React.FC = () => {
 
   useEffect(() => {
     if (!isInitialLoad && state.view !== 'EXPIRED') {
-      const currentDataString = JSON.stringify({ sectors, employees, requests });
+      const currentDataString = JSON.stringify({ sectors, employees, requests, overtimeMultiplier, valeTransporteValue });
       if (currentDataString !== lastSyncedDataRef.current) {
         const timer = setTimeout(() => {
           syncDatabase({ sectors, employees, requests });
@@ -559,16 +559,29 @@ const App: React.FC = () => {
         return () => clearTimeout(timer);
       }
     }
-  }, [sectors, employees, requests, isInitialLoad, syncDatabase, state.view]);
+  }, [sectors, employees, requests, overtimeMultiplier, valeTransporteValue, isInitialLoad, syncDatabase, state.view]);
 
   useEffect(() => {
     if (showFormModal && !editingRequestId) {
       const weekDays = getWeekDays(new Date(currentWeek));
-      setModalRecords(weekDays.map(date => ({
-        date, realEntry: '', punchEntry: '', punchExit: '', realExit: '', isFolgaVendida: false
-      })));
+      const employee = employees.find(e => e.id === selectedEmployee);
+      
+      setModalRecords(weekDays.map(date => {
+        const [year, month, day] = date.split('-');
+        const dayOfWeek = new Date(Number(year), Number(month) - 1, Number(day)).getDay();
+        const isFolgaFixa = employee && employee.type === EmployeeType.REGISTRADO && employee.fixedDayOff === dayOfWeek;
+
+        return {
+          date, 
+          realEntry: '', 
+          punchEntry: '', 
+          punchExit: '', 
+          realExit: '', 
+          isFolgaVendida: isFolgaFixa || false
+        };
+      }));
     }
-  }, [showFormModal, currentWeek, editingRequestId]);
+  }, [showFormModal, currentWeek, editingRequestId, selectedEmployee, employees]);
 
   useEffect(() => {
     if (!isInitialLoad) {
@@ -881,20 +894,27 @@ const App: React.FC = () => {
     const monthlyHours = parseFloat(String(e.monthlyHours)) || 220;
     const hourlyBase = salary / monthlyHours;
     const overtimeRate = hourlyBase * overtimeMultiplier;
+    
+    const diasSemana = ['Domingo', 'Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'];
 
     return (
       <>
         <tr className="border-b dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-900/50 transition-colors">
           <td className="py-4 dark:text-gray-200">
-            <button onClick={() => setIsExpanded(!isExpanded)} className="flex items-center gap-2 hover:text-blue-600 transition-colors font-bold">
+            <button onClick={() => setIsExpanded(!isExpanded)} className="flex items-center gap-2 hover:text-blue-600 transition-colors font-bold text-left">
               {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-              {e.name}
+              <div>
+                <span>{e.name}</span>
+                {e.fixedDayOff !== undefined && (
+                   <span className="block text-[8px] text-blue-500 uppercase tracking-wider font-black">Folga: {diasSemana[e.fixedDayOff]}</span>
+                )}
+              </div>
             </button>
           </td>
           <td className="py-4 dark:text-gray-300">{sector?.name}</td>
           <td className="py-4 dark:text-gray-300 font-bold text-blue-600 dark:text-blue-400">{formatCurrency(overtimeRate)}</td>
           <td className="py-4 text-right flex justify-end gap-2">
-            <button onClick={() => { setEditingEmployeeId(e.id); setNewEmpData({ name: e.name, sectorId: e.sectorId, salary: e.salary, monthlyHours: e.monthlyHours, type: e.type }); }} className="text-blue-500 hover:text-blue-400"><Edit2 className="w-4 h-4" /></button>
+            <button onClick={() => { setEditingEmployeeId(e.id); setNewEmpData({ name: e.name, sectorId: e.sectorId, salary: e.salary, monthlyHours: e.monthlyHours, type: e.type, fixedDayOff: e.fixedDayOff }); }} className="text-blue-500 hover:text-blue-400"><Edit2 className="w-4 h-4" /></button>
             <button onClick={() => setEmployees(employees.filter(emp => emp.id !== e.id))} className="text-red-400 hover:text-red-300"><XCircle className="w-4 h-4" /></button>
           </td>
         </tr>
@@ -2166,11 +2186,19 @@ function testeManual() {
                     {sectors.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                   </select>
                 </div>
-                <div className="grid grid-cols-1 md:grid-cols-5 gap-4 bg-gray-50 dark:bg-gray-900 p-6 rounded-2xl">
+                <div className="grid grid-cols-1 md:grid-cols-6 gap-4 bg-gray-50 dark:bg-gray-900 p-6 rounded-2xl">
                   <input type="text" placeholder="Nome" className="p-4 border dark:border-gray-700 rounded-xl bg-white dark:bg-gray-800 text-black dark:text-white text-base focus:border-blue-500 outline-none" value={newEmpData.name} onChange={(e) => setNewEmpData({ ...newEmpData, name: e.target.value })} />
                   <select className="p-4 border dark:border-gray-700 rounded-xl bg-white dark:bg-gray-800 text-black dark:text-white text-base focus:border-blue-500 outline-none" value={newEmpData.sectorId} onChange={(e) => setNewEmpData({ ...newEmpData, sectorId: e.target.value })}><option value="">Setor...</option>{sectors.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}</select>
                   <input type="number" placeholder="Salário" className="p-4 border dark:border-gray-700 rounded-xl bg-white dark:bg-gray-800 text-black dark:text-white text-base focus:border-blue-500 outline-none" value={newEmpData.salary || ''} onChange={(e) => setNewEmpData({ ...newEmpData, salary: parseFloat(e.target.value) })} />
                   <input type="number" placeholder="Horas" className="p-4 border dark:border-gray-700 rounded-xl bg-white dark:bg-gray-800 text-black dark:text-white text-base focus:border-blue-500 outline-none" value={newEmpData.monthlyHours || ''} onChange={(e) => setNewEmpData({ ...newEmpData, monthlyHours: parseFloat(e.target.value) })} />
+                  <select 
+                    className="p-4 border dark:border-gray-700 rounded-xl bg-white dark:bg-gray-800 text-black dark:text-white text-base focus:border-blue-500 outline-none" 
+                    value={newEmpData.fixedDayOff === undefined ? '' : newEmpData.fixedDayOff} 
+                    onChange={(e) => setNewEmpData({ ...newEmpData, fixedDayOff: e.target.value === '' ? undefined : parseInt(e.target.value) })}
+                  >
+                    <option value="">Folga Fixa...</option>
+                    {['Domingo', 'Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'].map((day, i) => <option key={i} value={i}>{day}</option>)}
+                  </select>
                   <div className="flex gap-2">
                     <button 
                       onClick={() => { 
@@ -2181,7 +2209,7 @@ function testeManual() {
                           } else {
                             setEmployees([...employees, {...newEmpData, id: Math.random().toString(36).substr(2, 9)}]); 
                           }
-                          setNewEmpData({name: '', sectorId: '', salary: 0, monthlyHours: 220, type: EmployeeType.REGISTRADO}); 
+                          setNewEmpData({name: '', sectorId: '', salary: 0, monthlyHours: 220, type: EmployeeType.REGISTRADO, fixedDayOff: undefined}); 
                         } 
                       }} 
                       className={`${editingEmployeeId ? 'bg-green-600' : 'bg-blue-600'} text-white font-bold rounded-xl flex-1 py-3 active:scale-95 transition`}
@@ -2189,7 +2217,7 @@ function testeManual() {
                       {editingEmployeeId ? 'Salvar' : 'Add'}
                     </button>
                     {editingEmployeeId && (
-                      <button onClick={() => { setEditingEmployeeId(null); setNewEmpData({name: '', sectorId: '', salary: 0, monthlyHours: 220, type: EmployeeType.REGISTRADO}); }} className="bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-300 font-bold rounded-xl px-3 hover:bg-gray-300 dark:hover:bg-gray-600 transition"><XCircle className="w-5 h-5" /></button>
+                      <button onClick={() => { setEditingEmployeeId(null); setNewEmpData({name: '', sectorId: '', salary: 0, monthlyHours: 220, type: EmployeeType.REGISTRADO, fixedDayOff: undefined}); }} className="bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-300 font-bold rounded-xl px-3 hover:bg-gray-300 dark:hover:bg-gray-600 transition"><XCircle className="w-5 h-5" /></button>
                     )}
                   </div>
                 </div>
@@ -2226,9 +2254,12 @@ function testeManual() {
                                     <div>
                                         <h4 className="font-bold text-gray-800 dark:text-gray-200 text-lg">{e.name}</h4>
                                         <p className="text-xs text-gray-500 dark:text-gray-400 uppercase font-bold">{sector?.name}</p>
+                                        {e.fixedDayOff !== undefined && (
+                                           <p className="text-[10px] text-blue-600 dark:text-blue-400 font-black uppercase tracking-tighter">Folga Fixa: {['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'][e.fixedDayOff]}</p>
+                                        )}
                                     </div>
                                     <div className="flex gap-2">
-                                        <button onClick={() => { setEditingEmployeeId(e.id); setNewEmpData({ name: e.name, sectorId: e.sectorId, salary: e.salary, monthlyHours: e.monthlyHours, type: e.type }); }} className="bg-white dark:bg-gray-800 p-2 rounded-lg text-blue-600 dark:text-blue-400 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700"><Edit2 className="w-5 h-5" /></button>
+                                        <button onClick={() => { setEditingEmployeeId(e.id); setNewEmpData({ name: e.name, sectorId: e.sectorId, salary: e.salary, monthlyHours: e.monthlyHours, type: e.type, fixedDayOff: e.fixedDayOff }); }} className="bg-white dark:bg-gray-800 p-2 rounded-lg text-blue-600 dark:text-blue-400 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700"><Edit2 className="w-5 h-5" /></button>
                                         <button onClick={() => setEmployees(employees.filter(emp => emp.id !== e.id))} className="bg-white dark:bg-gray-800 p-2 rounded-lg text-red-500 dark:text-red-400 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700"><XCircle className="w-5 h-5" /></button>
                                     </div>
                                 </div>
