@@ -175,10 +175,18 @@ app.post('/api/sheets/sync', async (req, res) => {
 
     const prepareData = (data: any[]) => {
       if (!data || data.length === 0) return [];
-      const headers = Object.keys(data[0]);
+      
+      // Get all unique keys from all objects to ensure all columns are represented
+      const allKeys = new Set<string>();
+      data.forEach(item => {
+        Object.keys(item).forEach(key => allKeys.add(key));
+      });
+      const headers = Array.from(allKeys);
+
       const rows = data.map(item => headers.map(h => {
         const val = item[h];
-        return (val !== null && typeof val === 'object') ? JSON.stringify(val) : val;
+        if (val === undefined || val === null) return '';
+        return (typeof val === 'object') ? JSON.stringify(val) : val;
       }));
       return [headers, ...rows];
     };

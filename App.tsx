@@ -75,6 +75,9 @@ const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899'
 const App: React.FC = () => {
   // --- Estados do Banco de Dados ---
   const getInitialValue = <T,>(key: string, defaultValue: T): T => {
+    // Para configurações globais (HE/VT), ignoramos o localStorage se quisermos forçar a planilha como fonte
+    // No entanto, para persistência entre sessões sem rede, o localStorage é útil.
+    // O problema é que o localStorage pode estar com dados obsoletos que sobrescrevem a planilha.
     try {
       const local = localStorage.getItem(STORAGE_KEY);
       if (local) {
@@ -172,18 +175,12 @@ const App: React.FC = () => {
   }, [isDarkMode]);
 
   const [isServiceAccountSetup, setIsServiceAccountSetup] = useState(true);
-  const configRef = useRef({ overtimeMultiplier, valeTransporteValue });
+  const configRef = useRef({ overtimeMultiplier: 1.25, valeTransporteValue: 12.0 });
   useEffect(() => {
     configRef.current = { overtimeMultiplier, valeTransporteValue };
   }, [overtimeMultiplier, valeTransporteValue]);
 
-  const lastSyncedDataRef = useRef<string>(JSON.stringify({ 
-    sectors: getInitialValue('sectors', []), 
-    employees: getInitialValue('employees', []), 
-    requests: getInitialValue('requests', []), 
-    overtimeMultiplier: getInitialValue('overtimeMultiplier', 1.25), 
-    valeTransporteValue: getInitialValue('valeTransporteValue', 12.0) 
-  }));
+  const lastSyncedDataRef = useRef<string>("");
   const [generatedLink, setGeneratedLink] = useState('');
 
   const exportToExcel = useCallback(() => {
@@ -270,6 +267,13 @@ const App: React.FC = () => {
     return isNaN(parsed) ? defaultValue : parsed;
   };
 
+  const parseInteger = (val: any, defaultValue?: number): number | undefined => {
+    if (val === undefined || val === null || val === '') return defaultValue;
+    // Se vier como string/número da planilha
+    const parsed = parseInt(String(val), 10);
+    return isNaN(parsed) ? defaultValue : parsed;
+  };
+
   const loadDatabase = useCallback(async (urlToUse?: string) => {
     const targetUrl = urlToUse || dbUrl;
     if (!targetUrl) {
@@ -278,9 +282,24 @@ const App: React.FC = () => {
     }
 
     setIsSyncing(true);
+    
+    // Fallback/Preliminary load from localStorage to show data immediately
+    const localData = localStorage.getItem(STORAGE_KEY);
+    if (localData && isInitialLoad) {
+      try {
+        const parsed = JSON.parse(localData);
+        if (parsed.sectors) setSectors(parsed.sectors);
+        if (parsed.employees) setEmployees(parsed.employees);
+        if (parsed.requests) setRequests(parsed.requests);
+        if (parsed.overtimeMultiplier) setOvertimeMultiplier(parsed.overtimeMultiplier);
+        if (parsed.valeTransporteValue) setValeTransporteValue(parsed.valeTransporteValue);
+      } catch (e) {}
+    }
+
     try {
       const spreadsheetId = extractSpreadsheetId(targetUrl);
       const response = await fetch(`/api/sheets/load?spreadsheetId=${spreadsheetId}`);
+      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
       const data = await response.json();
       
       if (data && data.needsSetup) {
@@ -291,6 +310,8 @@ const App: React.FC = () => {
       }
       
       if (data && !data.error) {
+        console.log("[Load] Data received from spreadsheet:", data);
+        
         const uniqueSectors = Array.from(new Map((data.sectors || []).map((s: any) => [s.id, {
           ...s,
           fixedRate: parseNumber(s.fixedRate, 0)
@@ -300,23 +321,24 @@ const App: React.FC = () => {
           ...e,
           salary: parseNumber(e.salary, 0),
           monthlyHours: parseNumber(e.monthlyHours, 220),
-          fixedDayOff: e.fixedDayOff !== undefined && e.fixedDayOff !== "" ? parseInt(String(e.fixedDayOff)) : undefined,
+          fixedDayOff: parseInteger(e.fixedDayOff),
           workRegime: e.workRegime || '6X1',
           parityRef: e.parityRef || 'EVEN'
         }])).values()) as Employee[];
         const activeRequests = (data.requests || []).filter((r: TimeRequest) => r.status !== RequestStatus.DELETADO);
         const uniqueRequests = Array.from(new Map(activeRequests.map((r: any) => [r.id, r])).values()) as TimeRequest[];
 
+        // Use hardcoded defaults if missing in both sheet and state
         let finalOvertime = overtimeMultiplier;
         let finalVT = valeTransporteValue;
 
         if (data.config) {
-          if (data.config.overtimeMultiplier !== undefined) {
-            finalOvertime = parseNumber(data.config.overtimeMultiplier, overtimeMultiplier);
+          if (data.config.overtimeMultiplier !== undefined && data.config.overtimeMultiplier !== null && data.config.overtimeMultiplier !== "") {
+            finalOvertime = parseNumber(data.config.overtimeMultiplier, 1.25);
             setOvertimeMultiplier(finalOvertime);
           }
-          if (data.config.valeTransporteValue !== undefined) {
-            finalVT = parseNumber(data.config.valeTransporteValue, valeTransporteValue);
+          if (data.config.valeTransporteValue !== undefined && data.config.valeTransporteValue !== null && data.config.valeTransporteValue !== "") {
+            finalVT = parseNumber(data.config.valeTransporteValue, 12.0);
             setValeTransporteValue(finalVT);
           }
         }
@@ -327,13 +349,15 @@ const App: React.FC = () => {
         
         if (urlToUse) setDbUrl(urlToUse);
         
-        lastSyncedDataRef.current = JSON.stringify({
+        const dataToSyncId = JSON.stringify({
           sectors: uniqueSectors,
           employees: uniqueEmployees,
           requests: uniqueRequests,
           overtimeMultiplier: finalOvertime,
           valeTransporteValue: finalVT
         });
+
+        lastSyncedDataRef.current = dataToSyncId;
 
         localStorage.setItem(STORAGE_KEY, JSON.stringify({
           sectors: uniqueSectors,
@@ -350,62 +374,14 @@ const App: React.FC = () => {
         throw new Error(data.error);
       }
     } catch (error: any) {
-      if (error.message && error.message.includes('Conta de Serviço')) {
-        setAlertMessage(error.message);
-      } else if (error.message && error.message.includes('Planilha não encontrada')) {
-        setAlertMessage(error.message);
-      } else {
-        console.error("Erro ao carregar dados:", error);
-        setAlertMessage("Erro ao comunicar com o servidor. Verifique os logs para mais detalhes.");
-      }
-      
-      // Fallback para localStorage
-      const localData = localStorage.getItem(STORAGE_KEY);
-      if (localData) {
-        try {
-          const parsed = JSON.parse(localData);
-          const uniqueSectors = Array.from(new Map((parsed.sectors || []).map((s: any) => [s.id, {
-            ...s,
-            fixedRate: parseFloat(s.fixedRate || 0)
-          }])).values()) as Sector[];
-          
-          const uniqueEmployees = Array.from(new Map((parsed.employees || []).map((e: any) => [e.id, {
-            ...e,
-            salary: parseFloat(e.salary || 0),
-            monthlyHours: parseFloat(e.monthlyHours || 220),
-            fixedDayOff: e.fixedDayOff !== undefined && e.fixedDayOff !== "" ? parseInt(String(e.fixedDayOff)) : undefined,
-            workRegime: e.workRegime || '6X1',
-            parityRef: e.parityRef || 'EVEN'
-          }])).values()) as Employee[];
-          const activeLocalRequests = (parsed.requests || []).filter((r: TimeRequest) => r.status !== RequestStatus.DELETADO);
-          const uniqueRequests = Array.from(new Map(activeLocalRequests.map((r: any) => [r.id, r])).values()) as TimeRequest[];
-
-          setSectors(uniqueSectors);
-          setEmployees(uniqueEmployees);
-          setRequests(uniqueRequests);
-          if (parsed.folderRegId) setFolderRegId(parsed.folderRegId);
-          if (parsed.folderFixoId) setFolderFixoId(parsed.folderFixoId);
-          
-          const finalOvertime = parsed.overtimeMultiplier || configRef.current.overtimeMultiplier;
-          const finalVT = parsed.valeTransporteValue || configRef.current.valeTransporteValue;
-          
-          setOvertimeMultiplier(finalOvertime);
-          setValeTransporteValue(finalVT);
-          
-          lastSyncedDataRef.current = JSON.stringify({
-            sectors: uniqueSectors,
-            employees: uniqueEmployees,
-            requests: uniqueRequests,
-            overtimeMultiplier: finalOvertime,
-            valeTransporteValue: finalVT
-          });
-        } catch (e) {}
-      }
+      console.error("[Load] Erro ao carregar dados:", error);
+      setAlertMessage(`Falha ao carregar dados da planilha: ${error.message}. Usando base local.`);
+      // Data already loaded from localStorage at the start of this function
     } finally {
       setIsSyncing(false);
       setIsInitialLoad(false);
     }
-  }, [dbUrl, scriptUrl, folderRegId, folderFixoId, overtimeMultiplier, valeTransporteValue]);
+  }, [dbUrl, scriptUrl, folderRegId, folderFixoId, isInitialLoad]);
 
   const executarFechamentoSemanal = async () => {
     setConfirmDialog({
@@ -528,7 +504,8 @@ const App: React.FC = () => {
     if (!dbUrl) return;
 
     setIsSyncing(true);
-    const configToSync = explicitConfig || { overtimeMultiplier, valeTransporteValue };
+    // Use refs or explicit values to avoid unnecessary dependency-triggered recreations
+    const configToSync = explicitConfig || { overtimeMultiplier: configRef.current.overtimeMultiplier, valeTransporteValue: configRef.current.valeTransporteValue };
 
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...currentData, dbUrl, scriptUrl, folderRegId, folderFixoId, overtimeMultiplier: configToSync.overtimeMultiplier, valeTransporteValue: configToSync.valeTransporteValue }));
@@ -574,14 +551,12 @@ const App: React.FC = () => {
       } else if (error.message && error.message.includes('Planilha não encontrada')) {
         setAlertMessage(error.message);
       } else {
-        // No iPhone, queremos ver o erro real se falhar
-        setAlertMessage(`Erro de Sincronização: ${error.message}. Verifique sua conexão ou se o app está em modo privado.`);
+        setAlertMessage(`Erro de Sincronização: ${error.message}. Verifique sua conexão.`);
       }
-      // Falha silenciosa na sincronização para outros erros, dados já estão no localStorage
     } finally {
       setIsSyncing(false);
     }
-  }, [dbUrl, scriptUrl, folderRegId, folderFixoId, isAuth, overtimeMultiplier, valeTransporteValue]);
+  }, [dbUrl, scriptUrl, folderRegId, folderFixoId]);
 
   useEffect(() => {
     if (hasLoadedRef.current) return;
@@ -604,13 +579,20 @@ const App: React.FC = () => {
 
   useEffect(() => {
     if (!isInitialLoad && state.view !== 'EXPIRED') {
-      const currentDataString = JSON.stringify({ sectors, employees, requests, overtimeMultiplier, valeTransporteValue });
-      if (currentDataString !== lastSyncedDataRef.current) {
+      const currentData = { sectors, employees, requests, overtimeMultiplier, valeTransporteValue };
+      const currentDataString = JSON.stringify(currentData);
+      
+      // Só sincroniza se houver mudança REAL em relação ao último estado sincronizado
+      // E garante que não estamos enviando dados vazios/iniciais por engano
+      if (lastSyncedDataRef.current && currentDataString !== lastSyncedDataRef.current) {
         const timer = setTimeout(() => {
           syncDatabase({ sectors, employees, requests }, { overtimeMultiplier, valeTransporteValue });
           lastSyncedDataRef.current = currentDataString;
-        }, 1500);
+        }, 2000); // Aumentado para 2s para evitar conflitos em dispositivos lentos
         return () => clearTimeout(timer);
+      } else if (!lastSyncedDataRef.current) {
+        // Primeira vez que o ref é preenchido após load
+        lastSyncedDataRef.current = currentDataString;
       }
     }
   }, [sectors, employees, requests, overtimeMultiplier, valeTransporteValue, isInitialLoad, syncDatabase, state.view]);
@@ -657,9 +639,10 @@ const App: React.FC = () => {
 
   useEffect(() => {
     if (!isInitialLoad) {
-      const currentData = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
       localStorage.setItem(STORAGE_KEY, JSON.stringify({
-        ...currentData,
+        sectors,
+        employees,
+        requests,
         dbUrl,
         scriptUrl,
         folderRegId,
@@ -668,7 +651,7 @@ const App: React.FC = () => {
         valeTransporteValue
       }));
     }
-  }, [dbUrl, scriptUrl, folderRegId, folderFixoId, overtimeMultiplier, valeTransporteValue, isInitialLoad]);
+  }, [sectors, employees, requests, dbUrl, scriptUrl, folderRegId, folderFixoId, overtimeMultiplier, valeTransporteValue, isInitialLoad]);
 
   // --- Handlers ---
   const handleAdminLogin = () => {
