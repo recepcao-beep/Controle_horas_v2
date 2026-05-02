@@ -69,10 +69,12 @@ app.get('/api/sheets/load', async (req, res) => {
     
     const ranges = ['Setores!A:Z', 'Funcionarios!A:Z', 'Solicitacoes!A:Z', 'Config!A:Z'];
     
-    // Filter ranges to only those that exist (case-insensitive and trimming spaces)
+    const normalize = (s: string) => s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
+    
+    // Filter ranges to only those that exist (accent-insensitive, case-insensitive)
     const existingRanges = ranges.filter(r => {
-      const targetName = r.split('!')[0].toLowerCase().trim();
-      return sheetNames.some(sn => sn.toLowerCase().trim() === targetName);
+      const targetName = normalize(r.split('!')[0]);
+      return sheetNames.some(sn => normalize(sn) === targetName);
     });
     console.log(`[API] Fetching ranges:`, existingRanges);
 
@@ -92,16 +94,16 @@ app.get('/api/sheets/load', async (req, res) => {
     console.log(`[API] Received data for ${valueRanges.length} ranges.`);
     
     const parseSheet = (title: string) => {
-      const targetTitle = title.toLowerCase().trim();
+      const targetTitle = normalize(title);
       const vr = valueRanges.find(v => {
-        const rangeName = (v.range || '').split('!')[0].replace(/['"]/g, '').toLowerCase().trim();
-        return rangeName.includes(targetTitle);
+        const rangeName = normalize((v.range || '').split('!')[0].replace(/['"]/g, ''));
+        return rangeName === targetTitle || rangeName.includes(targetTitle);
       });
       if (!vr || !vr.values || vr.values.length <= 1) {
         console.log(`[API] Sheet ${title} is empty or not found.`);
         return [];
       }
-      const headers = vr.values[0];
+      const headers = vr.values[0].map((h: any) => normalize(String(h)).replace(/\s+/g, ''));
       const parsed = vr.values.slice(1).map(row => {
         const obj: any = {};
         headers.forEach((h, i) => {
@@ -109,7 +111,7 @@ app.get('/api/sheets/load', async (req, res) => {
           if (typeof val === 'string' && (val.startsWith('[') || val.startsWith('{'))) {
             try { val = JSON.parse(val); } catch(e) {}
           }
-          obj[h] = val;
+          if (h) obj[h] = val;
         });
         return obj;
       });

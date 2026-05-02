@@ -72,6 +72,8 @@ const STORAGE_KEY = 'controle_horas_db_v3';
 const DEFAULT_SHEET_URL = 'https://docs.google.com/spreadsheets/d/1Ksam1nwTxzveH0BaWKftQnyDBuOBJYCX5A3FwmP9EnY/edit#gid=67462249';
 const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899'];
 
+const normalize = (s: string) => s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
+
 const App: React.FC = () => {
   // --- Estados do Banco de Dados ---
   const getInitialValue = <T,>(key: string, defaultValue: T): T => {
@@ -310,41 +312,108 @@ const App: React.FC = () => {
       }
       
       if (data && !data.error) {
-        console.log("[Load] Data received from spreadsheet:", data);
+        console.log("[Load] Dados recebidos da planilha:", data);
+        if (data.sectors) console.log(`[Load] ${data.sectors.length} setores encontrados.`);
+        if (data.employees) console.log(`[Load] ${data.employees.length} funcionários encontrados.`);
         
-        const uniqueSectors = Array.from(new Map((data.sectors || []).map((s: any) => [s.id, {
-          ...s,
-          fixedRate: parseNumber(s.fixedRate, 0)
-        }])).values()) as Sector[];
+        const uniqueSectors = Array.from(new Map((data.sectors || []).map((s: any) => {
+          const id = String(s.id || s.ID || '').trim();
+          return [id, {
+            id,
+            name: s.name || s.nome || s.NAME || '',
+            fixedRate: parseNumber(s.fixedrate || s.taxafixa || s.valorfixo || s.diaria || s.fixedRate || 0, 0)
+          }];
+        })).values()) as Sector[];
         
-        const uniqueEmployees = Array.from(new Map((data.employees || []).map((e: any) => [e.id, {
-          ...e,
-          salary: parseNumber(e.salary, 0),
-          monthlyHours: parseNumber(e.monthlyHours, 220),
-          fixedDayOff: parseInteger(e.fixedDayOff),
-          workRegime: e.workRegime || '6X1',
-          parityRef: e.parityRef || 'EVEN'
-        }])).values()) as Employee[];
-        const activeRequests = (data.requests || []).filter((r: TimeRequest) => r.status !== RequestStatus.DELETADO);
-        const uniqueRequests = Array.from(new Map(activeRequests.map((r: any) => [r.id, r])).values()) as TimeRequest[];
+        const uniqueEmployees = Array.from(new Map((data.employees || []).map((e: any) => {
+          const id = String(e.id || e.ID || '').trim();
+          const rawType = String(e.type || e.tipo || e.TYPE || EmployeeType.REGISTRADO).toUpperCase();
+          const type = rawType.includes('FIXO') ? EmployeeType.FIXO : EmployeeType.REGISTRADO;
+          
+          return [id, {
+            id,
+            name: e.name || e.nome || e.NAME || '',
+            sectorId: String(e.sectorid || e.setorid || e.idsetor || e.sectorId || '').trim(),
+            type,
+            salary: parseNumber(e.salary || e.salario || e.valor || e.SALARY || 0, 0),
+            monthlyHours: parseNumber(e.monthlyhours || e.horasmensais || e.horas || e.monthlyHours || 220, 220),
+            fixedDayOff: parseInteger(e.fixeddayoff || e.folgafixa || e.diafolga || e.fixedDayOff),
+            workRegime: String(e.workregime || e.regimetrabalho || e.regime || e.workRegime || '6X1').toUpperCase(),
+            parityRef: String(e.parityref || e.referenciaparidade || e.paridade || e.parityRef || 'EVEN').toUpperCase()
+          }];
+        })).values()) as Employee[];
+        
+        const activeRequests = (data.requests || []).filter((r: any) => {
+          const status = String(r.status || r.STATUS || '').toUpperCase();
+          return status !== RequestStatus.DELETADO;
+        });
+
+        const uniqueRequests = Array.from(new Map(activeRequests.map((r: any) => {
+          const id = String(r.id || r.ID || '').trim();
+          let records = r.records || r.RECORDS;
+          if (typeof records === 'string') {
+            try { records = JSON.parse(records); } catch(e) { records = []; }
+          }
+          
+          const rawType = String(r.employeetype || r.tipofuncionario || r.tipo || r.employeeType || EmployeeType.REGISTRADO).toUpperCase();
+          const employeeType = rawType.includes('FIXO') ? EmployeeType.FIXO : EmployeeType.REGISTRADO;
+          
+          const mappedRequest: TimeRequest = {
+            id,
+            employeeId: String(r.employeeid || r.funcionarioid || r.idfuncionario || r.employeeId || ''),
+            employeeName: String(r.employeename || r.nomefuncionario || r.nome || r.employeeName || ''),
+            employeeType,
+            sectorId: String(r.sectorid || r.setorid || r.idsetor || r.sectorId || ''),
+            sectorName: String(r.sectorname || r.nomesetor || r.setor || r.sectorName || ''),
+            weekStarting: String(r.weekstarting || r.iniciosemana || r.semana || r.weekStarting || ''),
+            records: Array.isArray(records) ? records : [],
+            status: (r.status || r.situacao || r.STATUS || RequestStatus.PENDENTE).toUpperCase() as RequestStatus,
+            calculatedValue: parseNumber(r.calculatedvalue || r.valorcalculado || r.valor || r.calculatedValue, 0),
+            totalTimeDecimal: parseNumber(r.totaltimedecimal || r.tempototal || r.totalhoras || r.totalTimeDecimal, 0),
+            createdAt: String(r.createdat || r.criadoem || r.datacriacao || r.createdAt || new Date().toISOString()),
+            editJustification: r.editjustification || r.justificativaedicao || r.editJustification
+          };
+          
+          return [id, mappedRequest];
+        })).values()) as TimeRequest[];
 
         // Use hardcoded defaults if missing in both sheet and state
         let finalOvertime = overtimeMultiplier;
         let finalVT = valeTransporteValue;
 
         if (data.config) {
-          if (data.config.overtimeMultiplier !== undefined && data.config.overtimeMultiplier !== null && data.config.overtimeMultiplier !== "") {
-            finalOvertime = parseNumber(data.config.overtimeMultiplier, 1.25);
+          const config = data.config;
+          const getVal = (...keys: string[]) => {
+            for (const key of keys) {
+              const normalizedKey = normalize(key).replace(/\s+/g, '');
+              if (config[normalizedKey] !== undefined) return config[normalizedKey];
+              if (config[key] !== undefined) return config[key];
+            }
+            return undefined;
+          };
+          
+          const ovVal = getVal('overtimeMultiplier', 'multiplicadorhe', 'he', 'overtime');
+          if (ovVal !== undefined && ovVal !== null && ovVal !== "") {
+            finalOvertime = parseNumber(ovVal, 1.25);
             setOvertimeMultiplier(finalOvertime);
           }
-          if (data.config.valeTransporteValue !== undefined && data.config.valeTransporteValue !== null && data.config.valeTransporteValue !== "") {
-            finalVT = parseNumber(data.config.valeTransporteValue, 12.0);
+          const vtVal = getVal('valeTransporteValue', 'valetransporte', 'vt');
+          if (vtVal !== undefined && vtVal !== null && vtVal !== "") {
+            finalVT = parseNumber(vtVal, 12.0);
             setValeTransporteValue(finalVT);
           }
         }
 
-        setSectors(uniqueSectors);
-        setEmployees(uniqueEmployees);
+        if (uniqueSectors.length > 0) {
+          setSectors(uniqueSectors);
+        } else if (data.sectors && data.sectors.length > 0) {
+          console.warn("[Load] Setores encontrados na planilha mas falha no processamento de IDs.");
+        }
+        
+        if (uniqueEmployees.length > 0) {
+          setEmployees(uniqueEmployees);
+        }
+        
         setRequests(uniqueRequests);
         
         if (urlToUse) setDbUrl(urlToUse);
