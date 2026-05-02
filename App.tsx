@@ -161,7 +161,12 @@ const App: React.FC = () => {
   }, [isDarkMode]);
 
   const [isServiceAccountSetup, setIsServiceAccountSetup] = useState(true);
-  const lastSyncedDataRef = useRef<string>('{"sectors":[],"employees":[],"requests":[]}');
+  const configRef = useRef({ overtimeMultiplier, valeTransporteValue });
+  useEffect(() => {
+    configRef.current = { overtimeMultiplier, valeTransporteValue };
+  }, [overtimeMultiplier, valeTransporteValue]);
+
+  const lastSyncedDataRef = useRef<string>(JSON.stringify({ sectors: [], employees: [], requests: [], overtimeMultiplier: 1.25, valeTransporteValue: 12.0 }));
   const [generatedLink, setGeneratedLink] = useState('');
 
   const exportToExcel = useCallback(() => {
@@ -279,7 +284,9 @@ const App: React.FC = () => {
         lastSyncedDataRef.current = JSON.stringify({
           sectors: uniqueSectors,
           employees: uniqueEmployees,
-          requests: uniqueRequests
+          requests: uniqueRequests,
+          overtimeMultiplier: data.config?.overtimeMultiplier ? parseFloat(data.config.overtimeMultiplier) : configRef.current.overtimeMultiplier,
+          valeTransporteValue: data.config?.valeTransporteValue ? parseFloat(data.config.valeTransporteValue) : configRef.current.valeTransporteValue
         });
 
         localStorage.setItem(STORAGE_KEY, JSON.stringify({
@@ -323,7 +330,9 @@ const App: React.FC = () => {
           lastSyncedDataRef.current = JSON.stringify({
             sectors: uniqueSectors,
             employees: uniqueEmployees,
-            requests: uniqueRequests
+            requests: uniqueRequests,
+            overtimeMultiplier: parsed.overtimeMultiplier || configRef.current.overtimeMultiplier,
+            valeTransporteValue: parsed.valeTransporteValue || configRef.current.valeTransporteValue
           });
         } catch (e) {
           // Ignora erro de parse local
@@ -337,7 +346,9 @@ const App: React.FC = () => {
         lastSyncedDataRef.current = JSON.stringify({
           sectors: [],
           employees: [],
-          requests: []
+          requests: [],
+          overtimeMultiplier: configRef.current.overtimeMultiplier,
+          valeTransporteValue: configRef.current.valeTransporteValue
         });
       }
     } finally {
@@ -496,6 +507,15 @@ const App: React.FC = () => {
 
       const result = await response.json();
       if (!result.success) throw new Error(result.error || "Erro na sincronização via API");
+
+      // Update sync ref to prevent immediate re-sync from the effect
+      lastSyncedDataRef.current = JSON.stringify({ 
+        sectors: currentData.sectors, 
+        employees: currentData.employees, 
+        requests: currentData.requests, 
+        overtimeMultiplier: configToSync.overtimeMultiplier, 
+        valeTransporteValue: configToSync.valeTransporteValue 
+      });
     } catch (error: any) {
       console.error("Erro detalhado de sincronização:", error);
       
