@@ -265,8 +265,17 @@ const App: React.FC = () => {
       }
       
       if (data && !data.error) {
-        const uniqueSectors = Array.from(new Map((data.sectors || []).map((s: any) => [s.id, s])).values()) as Sector[];
-        const uniqueEmployees = Array.from(new Map((data.employees || []).map((e: any) => [e.id, e])).values()) as Employee[];
+        const uniqueSectors = Array.from(new Map((data.sectors || []).map((s: any) => [s.id, {
+          ...s,
+          fixedRate: parseFloat(s.fixedRate || 0)
+        }])).values()) as Sector[];
+        
+        const uniqueEmployees = Array.from(new Map((data.employees || []).map((e: any) => [e.id, {
+          ...e,
+          salary: parseFloat(e.salary || 0),
+          monthlyHours: parseFloat(e.monthlyHours || 220),
+          fixedDayOff: e.fixedDayOff !== undefined && e.fixedDayOff !== "" ? parseInt(String(e.fixedDayOff)) : undefined
+        }])).values()) as Employee[];
         const activeRequests = (data.requests || []).filter((r: TimeRequest) => r.status !== RequestStatus.DELETADO);
         const uniqueRequests = Array.from(new Map(activeRequests.map((r: any) => [r.id, r])).values()) as TimeRequest[];
 
@@ -281,12 +290,15 @@ const App: React.FC = () => {
 
         if (urlToUse) setDbUrl(urlToUse);
         
+        const finalOvertime = data.config?.overtimeMultiplier ? parseFloat(data.config.overtimeMultiplier) : overtimeMultiplier;
+        const finalVT = data.config?.valeTransporteValue ? parseFloat(data.config.valeTransporteValue) : valeTransporteValue;
+
         lastSyncedDataRef.current = JSON.stringify({
           sectors: uniqueSectors,
           employees: uniqueEmployees,
           requests: uniqueRequests,
-          overtimeMultiplier: data.config?.overtimeMultiplier ? parseFloat(data.config.overtimeMultiplier) : configRef.current.overtimeMultiplier,
-          valeTransporteValue: data.config?.valeTransporteValue ? parseFloat(data.config.valeTransporteValue) : configRef.current.valeTransporteValue
+          overtimeMultiplier: finalOvertime,
+          valeTransporteValue: finalVT
         });
 
         localStorage.setItem(STORAGE_KEY, JSON.stringify({
@@ -296,7 +308,9 @@ const App: React.FC = () => {
           dbUrl: targetUrl,
           scriptUrl,
           folderRegId,
-          folderFixoId
+          folderFixoId,
+          overtimeMultiplier: finalOvertime,
+          valeTransporteValue: finalVT
         }));
       } else if (data && data.error) {
         throw new Error(data.error);
@@ -316,8 +330,17 @@ const App: React.FC = () => {
       if (localData) {
         try {
           const parsed = JSON.parse(localData);
-          const uniqueSectors = Array.from(new Map((parsed.sectors || []).map((s: any) => [s.id, s])).values()) as Sector[];
-          const uniqueEmployees = Array.from(new Map((parsed.employees || []).map((e: any) => [e.id, e])).values()) as Employee[];
+          const uniqueSectors = Array.from(new Map((parsed.sectors || []).map((s: any) => [s.id, {
+            ...s,
+            fixedRate: parseFloat(s.fixedRate || 0)
+          }])).values()) as Sector[];
+          
+          const uniqueEmployees = Array.from(new Map((parsed.employees || []).map((e: any) => [e.id, {
+            ...e,
+            salary: parseFloat(e.salary || 0),
+            monthlyHours: parseFloat(e.monthlyHours || 220),
+            fixedDayOff: e.fixedDayOff !== undefined && e.fixedDayOff !== "" ? parseInt(String(e.fixedDayOff)) : undefined
+          }])).values()) as Employee[];
           const activeLocalRequests = (parsed.requests || []).filter((r: TimeRequest) => r.status !== RequestStatus.DELETADO);
           const uniqueRequests = Array.from(new Map(activeLocalRequests.map((r: any) => [r.id, r])).values()) as TimeRequest[];
 
@@ -326,6 +349,8 @@ const App: React.FC = () => {
           setRequests(uniqueRequests);
           if (parsed.folderRegId) setFolderRegId(parsed.folderRegId);
           if (parsed.folderFixoId) setFolderFixoId(parsed.folderFixoId);
+          if (parsed.overtimeMultiplier) setOvertimeMultiplier(parsed.overtimeMultiplier);
+          if (parsed.valeTransporteValue) setValeTransporteValue(parsed.valeTransporteValue);
           
           lastSyncedDataRef.current = JSON.stringify({
             sectors: uniqueSectors,
