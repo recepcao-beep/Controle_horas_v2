@@ -84,6 +84,8 @@ app.get('/api/sheets/load', async (req, res) => {
     const valuesResponse = await sheets.spreadsheets.values.batchGet({
       spreadsheetId,
       ranges: existingRanges,
+      valueRenderOption: 'UNFORMATTED_VALUE',
+      dateTimeRenderOption: 'FORMATTED_STRING',
     });
 
     const valueRanges = valuesResponse.data.valueRanges || [];

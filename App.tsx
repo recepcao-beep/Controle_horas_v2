@@ -74,15 +74,26 @@ const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899'
 
 const App: React.FC = () => {
   // --- Estados do Banco de Dados ---
-  const [sectors, setSectors] = useState<Sector[]>([]);
-  const [employees, setEmployees] = useState<Employee[]>([]);
-  const [requests, setRequests] = useState<TimeRequest[]>([]);
-  const [dbUrl, setDbUrl] = useState(DEFAULT_SHEET_URL);
-  const [scriptUrl, setScriptUrl] = useState('https://script.google.com/macros/s/AKfycby3TJGwqYjXMWyysi7CgHeNI48Kpmr8fCeFv3Ozr7252RvxdcNwlaNoRkgJYZHb2Il8/exec');
-  const [folderRegId, setFolderRegId] = useState('1OGOxVmi2nEwI47HP9l48VdVBKQeJTVqm');
-  const [folderFixoId, setFolderFixoId] = useState('1RzzDCHznw97QxwDLh_qvf8NE8yKPNdWU');
-  const [overtimeMultiplier, setOvertimeMultiplier] = useState(1.25);
-  const [valeTransporteValue, setValeTransporteValue] = useState(12.0);
+  const getInitialValue = <T,>(key: string, defaultValue: T): T => {
+    try {
+      const local = localStorage.getItem(STORAGE_KEY);
+      if (local) {
+        const parsed = JSON.parse(local);
+        if (parsed[key] !== undefined) return parsed[key];
+      }
+    } catch (e) {}
+    return defaultValue;
+  };
+
+  const [sectors, setSectors] = useState<Sector[]>(() => getInitialValue('sectors', []));
+  const [employees, setEmployees] = useState<Employee[]>(() => getInitialValue('employees', []));
+  const [requests, setRequests] = useState<TimeRequest[]>(() => getInitialValue('requests', []));
+  const [dbUrl, setDbUrl] = useState(() => getInitialValue('dbUrl', DEFAULT_SHEET_URL));
+  const [scriptUrl, setScriptUrl] = useState(() => getInitialValue('scriptUrl', 'https://script.google.com/macros/s/AKfycby3TJGwqYjXMWyysi7CgHeNI48Kpmr8fCeFv3Ozr7252RvxdcNwlaNoRkgJYZHb2Il8/exec'));
+  const [folderRegId, setFolderRegId] = useState(() => getInitialValue('folderRegId', '1OGOxVmi2nEwI47HP9l48VdVBKQeJTVqm'));
+  const [folderFixoId, setFolderFixoId] = useState(() => getInitialValue('folderFixoId', '1RzzDCHznw97QxwDLh_qvf8NE8yKPNdWU'));
+  const [overtimeMultiplier, setOvertimeMultiplier] = useState(() => getInitialValue('overtimeMultiplier', 1.25));
+  const [valeTransporteValue, setValeTransporteValue] = useState(() => getInitialValue('valeTransporteValue', 12.0));
   
   const extractFolderId = (input: string) => {
     if (!input) return '';
@@ -166,7 +177,13 @@ const App: React.FC = () => {
     configRef.current = { overtimeMultiplier, valeTransporteValue };
   }, [overtimeMultiplier, valeTransporteValue]);
 
-  const lastSyncedDataRef = useRef<string>(JSON.stringify({ sectors: [], employees: [], requests: [], overtimeMultiplier: 1.25, valeTransporteValue: 12.0 }));
+  const lastSyncedDataRef = useRef<string>(JSON.stringify({ 
+    sectors: getInitialValue('sectors', []), 
+    employees: getInitialValue('employees', []), 
+    requests: getInitialValue('requests', []), 
+    overtimeMultiplier: getInitialValue('overtimeMultiplier', 1.25), 
+    valeTransporteValue: getInitialValue('valeTransporteValue', 12.0) 
+  }));
   const [generatedLink, setGeneratedLink] = useState('');
 
   const exportToExcel = useCallback(() => {
@@ -244,6 +261,15 @@ const App: React.FC = () => {
 
   // --- Lógica de Sincronização de Dados ---
 
+  const parseNumber = (val: any, defaultValue: number): number => {
+    if (val === undefined || val === null || val === '') return defaultValue;
+    if (typeof val === 'number') return val;
+    // Handle string with comma
+    const cleaned = String(val).replace(',', '.');
+    const parsed = parseFloat(cleaned);
+    return isNaN(parsed) ? defaultValue : parsed;
+  };
+
   const loadDatabase = useCallback(async (urlToUse?: string) => {
     const targetUrl = urlToUse || dbUrl;
     if (!targetUrl) {
@@ -267,32 +293,40 @@ const App: React.FC = () => {
       if (data && !data.error) {
         const uniqueSectors = Array.from(new Map((data.sectors || []).map((s: any) => [s.id, {
           ...s,
-          fixedRate: parseFloat(s.fixedRate || 0)
+          fixedRate: parseNumber(s.fixedRate, 0)
         }])).values()) as Sector[];
         
         const uniqueEmployees = Array.from(new Map((data.employees || []).map((e: any) => [e.id, {
           ...e,
-          salary: parseFloat(e.salary || 0),
-          monthlyHours: parseFloat(e.monthlyHours || 220),
-          fixedDayOff: e.fixedDayOff !== undefined && e.fixedDayOff !== "" ? parseInt(String(e.fixedDayOff)) : undefined
+          salary: parseNumber(e.salary, 0),
+          monthlyHours: parseNumber(e.monthlyHours, 220),
+          fixedDayOff: e.fixedDayOff !== undefined && e.fixedDayOff !== "" ? parseInt(String(e.fixedDayOff)) : undefined,
+          workRegime: e.workRegime || '6X1',
+          parityRef: e.parityRef || 'EVEN'
         }])).values()) as Employee[];
         const activeRequests = (data.requests || []).filter((r: TimeRequest) => r.status !== RequestStatus.DELETADO);
         const uniqueRequests = Array.from(new Map(activeRequests.map((r: any) => [r.id, r])).values()) as TimeRequest[];
+
+        let finalOvertime = overtimeMultiplier;
+        let finalVT = valeTransporteValue;
+
+        if (data.config) {
+          if (data.config.overtimeMultiplier !== undefined) {
+            finalOvertime = parseNumber(data.config.overtimeMultiplier, overtimeMultiplier);
+            setOvertimeMultiplier(finalOvertime);
+          }
+          if (data.config.valeTransporteValue !== undefined) {
+            finalVT = parseNumber(data.config.valeTransporteValue, valeTransporteValue);
+            setValeTransporteValue(finalVT);
+          }
+        }
 
         setSectors(uniqueSectors);
         setEmployees(uniqueEmployees);
         setRequests(uniqueRequests);
         
-        if (data.config) {
-          if (data.config.overtimeMultiplier) setOvertimeMultiplier(parseFloat(data.config.overtimeMultiplier));
-          if (data.config.valeTransporteValue) setValeTransporteValue(parseFloat(data.config.valeTransporteValue));
-        }
-
         if (urlToUse) setDbUrl(urlToUse);
         
-        const finalOvertime = data.config?.overtimeMultiplier ? parseFloat(data.config.overtimeMultiplier) : overtimeMultiplier;
-        const finalVT = data.config?.valeTransporteValue ? parseFloat(data.config.valeTransporteValue) : valeTransporteValue;
-
         lastSyncedDataRef.current = JSON.stringify({
           sectors: uniqueSectors,
           employees: uniqueEmployees,
@@ -339,7 +373,9 @@ const App: React.FC = () => {
             ...e,
             salary: parseFloat(e.salary || 0),
             monthlyHours: parseFloat(e.monthlyHours || 220),
-            fixedDayOff: e.fixedDayOff !== undefined && e.fixedDayOff !== "" ? parseInt(String(e.fixedDayOff)) : undefined
+            fixedDayOff: e.fixedDayOff !== undefined && e.fixedDayOff !== "" ? parseInt(String(e.fixedDayOff)) : undefined,
+            workRegime: e.workRegime || '6X1',
+            parityRef: e.parityRef || 'EVEN'
           }])).values()) as Employee[];
           const activeLocalRequests = (parsed.requests || []).filter((r: TimeRequest) => r.status !== RequestStatus.DELETADO);
           const uniqueRequests = Array.from(new Map(activeLocalRequests.map((r: any) => [r.id, r])).values()) as TimeRequest[];
@@ -349,38 +385,27 @@ const App: React.FC = () => {
           setRequests(uniqueRequests);
           if (parsed.folderRegId) setFolderRegId(parsed.folderRegId);
           if (parsed.folderFixoId) setFolderFixoId(parsed.folderFixoId);
-          if (parsed.overtimeMultiplier) setOvertimeMultiplier(parsed.overtimeMultiplier);
-          if (parsed.valeTransporteValue) setValeTransporteValue(parsed.valeTransporteValue);
+          
+          const finalOvertime = parsed.overtimeMultiplier || configRef.current.overtimeMultiplier;
+          const finalVT = parsed.valeTransporteValue || configRef.current.valeTransporteValue;
+          
+          setOvertimeMultiplier(finalOvertime);
+          setValeTransporteValue(finalVT);
           
           lastSyncedDataRef.current = JSON.stringify({
             sectors: uniqueSectors,
             employees: uniqueEmployees,
             requests: uniqueRequests,
-            overtimeMultiplier: parsed.overtimeMultiplier || configRef.current.overtimeMultiplier,
-            valeTransporteValue: parsed.valeTransporteValue || configRef.current.valeTransporteValue
+            overtimeMultiplier: finalOvertime,
+            valeTransporteValue: finalVT
           });
-        } catch (e) {
-          // Ignora erro de parse local
-          lastSyncedDataRef.current = JSON.stringify({
-            sectors: [],
-            employees: [],
-            requests: []
-          });
-        }
-      } else {
-        lastSyncedDataRef.current = JSON.stringify({
-          sectors: [],
-          employees: [],
-          requests: [],
-          overtimeMultiplier: configRef.current.overtimeMultiplier,
-          valeTransporteValue: configRef.current.valeTransporteValue
-        });
+        } catch (e) {}
       }
     } finally {
       setIsSyncing(false);
       setIsInitialLoad(false);
     }
-  }, [dbUrl, scriptUrl, folderRegId, folderFixoId]);
+  }, [dbUrl, scriptUrl, folderRegId, folderFixoId, overtimeMultiplier, valeTransporteValue]);
 
   const executarFechamentoSemanal = async () => {
     setConfirmDialog({
@@ -574,31 +599,8 @@ const App: React.FC = () => {
       }
     }
     
-    const localData = localStorage.getItem(STORAGE_KEY);
-    let initialUrl = DEFAULT_SHEET_URL;
-    if (localData) {
-      try {
-        const parsed = JSON.parse(localData);
-        if (parsed.scriptUrl) setScriptUrl(parsed.scriptUrl);
-        if (parsed.folderRegId) setFolderRegId(parsed.folderRegId);
-        if (parsed.folderFixoId) setFolderFixoId(parsed.folderFixoId);
-        if (parsed.overtimeMultiplier) setOvertimeMultiplier(parsed.overtimeMultiplier);
-        if (parsed.valeTransporteValue) setValeTransporteValue(parsed.valeTransporteValue);
-        if (parsed.dbUrl) {
-          // Se a URL salva for a antiga, forçamos a nova
-          if (parsed.dbUrl.includes('1HRQ3L-iU-nYMKvKc3zcGoOw70uz8Sf0vfOiseMwlFWY')) {
-            initialUrl = DEFAULT_SHEET_URL;
-            setDbUrl(DEFAULT_SHEET_URL);
-          } else {
-            initialUrl = parsed.dbUrl;
-            setDbUrl(parsed.dbUrl);
-          }
-        }
-      } catch (e) {}
-    }
-    
-    loadDatabase(initialUrl);
-  }, [loadDatabase]);
+    loadDatabase(dbUrl);
+  }, [loadDatabase, dbUrl]);
 
   useEffect(() => {
     if (!isInitialLoad && state.view !== 'EXPIRED') {
@@ -2193,7 +2195,15 @@ function testeManual() {
                         step="0.01"
                         className="w-full p-4 border-2 border-gray-100 dark:border-gray-700 rounded-2xl bg-white dark:bg-gray-800 text-black dark:text-white outline-none focus:border-blue-500 font-bold text-lg transition-all" 
                         value={overtimeMultiplier} 
-                        onChange={(e) => setOvertimeMultiplier(parseFloat(e.target.value) || 0)} 
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          if (val === '') {
+                            setOvertimeMultiplier(0);
+                            return;
+                          }
+                          const parsed = parseFloat(val.replace(',', '.'));
+                          if (!isNaN(parsed)) setOvertimeMultiplier(parsed);
+                        }} 
                       />
                     </div>
                     <div className="space-y-2">
@@ -2205,7 +2215,15 @@ function testeManual() {
                           step="0.1"
                           className="w-full p-4 pl-12 border-2 border-gray-100 dark:border-gray-700 rounded-2xl bg-white dark:bg-gray-800 text-black dark:text-white outline-none focus:border-blue-500 font-bold text-lg transition-all" 
                           value={valeTransporteValue} 
-                          onChange={(e) => setValeTransporteValue(parseFloat(e.target.value) || 0)} 
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            if (val === '') {
+                              setValeTransporteValue(0);
+                              return;
+                            }
+                            const parsed = parseFloat(val.replace(',', '.'));
+                            if (!isNaN(parsed)) setValeTransporteValue(parsed);
+                          }} 
                         />
                       </div>
                     </div>
