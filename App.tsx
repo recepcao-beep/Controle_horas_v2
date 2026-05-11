@@ -241,6 +241,22 @@ const App: React.FC = () => {
       return { name: sector.name, value };
     }).filter(item => item.value > 0).sort((a, b) => b.value - a.value);
 
+    // Dados de Extra Fixo por Setor
+    const fixedExtraBySector = sectors.map(sector => {
+      const value = approved
+        .filter(r => r.sectorId === sector.id && r.employeeType === EmployeeType.FIXO)
+        .reduce((acc, curr) => acc + parseCurrency(curr.calculatedValue), 0);
+      return { name: sector.name, value };
+    }).filter(item => item.value > 0).sort((a, b) => b.value - a.value);
+
+    // Dados de Extra Registrado por Setor
+    const registeredExtraBySector = sectors.map(sector => {
+      const value = approved
+        .filter(r => r.sectorId === sector.id && r.employeeType === EmployeeType.REGISTRADO)
+        .reduce((acc, curr) => acc + parseCurrency(curr.calculatedValue), 0);
+      return { name: sector.name, value };
+    }).filter(item => item.value > 0).sort((a, b) => b.value - a.value);
+
     // Dados por Tipo (Registrado vs Fixo)
     const expensesByType = [
       { 
@@ -255,7 +271,14 @@ const App: React.FC = () => {
       }
     ].filter(i => i.value > 0);
 
-    return { totalSpent, expensesBySector, expensesByType, approvedCount: approved.length };
+    return { 
+      totalSpent, 
+      expensesBySector, 
+      fixedExtraBySector, 
+      registeredExtraBySector, 
+      expensesByType, 
+      approvedCount: approved.length 
+    };
   }, [requests, sectors]);
 
   // --- Lógica de Sincronização de Dados ---
@@ -301,8 +324,17 @@ const App: React.FC = () => {
     try {
       const spreadsheetId = extractSpreadsheetId(targetUrl);
       const response = await fetch(`/api/sheets/load?spreadsheetId=${spreadsheetId}`);
-      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-      const data = await response.json();
+      
+      let data;
+      try {
+        data = await response.json();
+      } catch (e) {
+        // Fallback se a resposta não for JSON
+      }
+
+      if (!response.ok) {
+        throw new Error(data?.error || `HTTP error! status: ${response.status}`);
+      }
       
       if (data && data.needsSetup) {
         setIsServiceAccountSetup(false);
@@ -2170,12 +2202,12 @@ function testeManual() {
                   ))}
                 </div>
 
-                {/* Gráficos */}
+                {/* Gráficos Row 1 */}
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                     <div className="bg-white dark:bg-gray-800 p-6 md:p-8 rounded-3xl border border-gray-100 dark:border-gray-700 shadow-sm flex flex-col min-h-[400px]">
                         <h3 className="text-lg font-bold text-gray-800 dark:text-white mb-6 flex items-center gap-2">
                             <MapPin className="w-5 h-5 text-blue-600 dark:text-blue-400" />
-                            Gastos por Setor
+                            Total por Setor
                         </h3>
                         <div className="h-[300px] w-full">
                             {dashboardData.expensesBySector.length > 0 ? (
@@ -2184,7 +2216,11 @@ function testeManual() {
                                         <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke={isDarkMode ? '#374151' : '#e5e7eb'} />
                                         <XAxis type="number" hide />
                                         <YAxis dataKey="name" type="category" width={80} tick={{fontSize: 10, fill: isDarkMode ? '#9ca3af' : '#6b7280'}} />
-                                        <Tooltip cursor={{fill: isDarkMode ? '#374151' : '#f3f4f6'}} contentStyle={{ backgroundColor: isDarkMode ? '#1f2937' : '#fff', borderColor: isDarkMode ? '#374151' : '#e5e7eb', color: isDarkMode ? '#f3f4f6' : '#111827' }} />
+                                        <Tooltip 
+                                          formatter={(value: any) => formatCurrency(value)}
+                                          cursor={{fill: isDarkMode ? '#374151' : '#f3f4f6'}} 
+                                          contentStyle={{ backgroundColor: isDarkMode ? '#1f2937' : '#fff', borderColor: isDarkMode ? '#374151' : '#e5e7eb', color: isDarkMode ? '#f3f4f6' : '#111827' }} 
+                                        />
                                         <Bar dataKey="value" fill="#3b82f6" radius={[0, 4, 4, 0]} barSize={24}>
                                             {dashboardData.expensesBySector.map((entry, index) => (
                                                 <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
@@ -2210,9 +2246,75 @@ function testeManual() {
                                         <Pie data={dashboardData.expensesByType} cx="50%" cy="50%" innerRadius={60} outerRadius={100} paddingAngle={5} dataKey="value">
                                             {dashboardData.expensesByType.map((entry, index) => <Cell key={`cell-${index}`} fill={entry.color} />)}
                                         </Pie>
-                                        <Tooltip contentStyle={{ backgroundColor: isDarkMode ? '#1f2937' : '#fff', borderColor: isDarkMode ? '#374151' : '#e5e7eb', color: isDarkMode ? '#f3f4f6' : '#111827' }} />
+                                        <Tooltip 
+                                          formatter={(value: any) => formatCurrency(value)}
+                                          contentStyle={{ backgroundColor: isDarkMode ? '#1f2937' : '#fff', borderColor: isDarkMode ? '#374151' : '#e5e7eb', color: isDarkMode ? '#f3f4f6' : '#111827' }} 
+                                        />
                                         <Legend verticalAlign="bottom" height={36} iconType="circle" wrapperStyle={{ color: isDarkMode ? '#f3f4f6' : '#111827' }} />
                                     </PieChart>
+                                </ResponsiveContainer>
+                            ) : (
+                                <div className="h-full flex flex-col items-center justify-center text-gray-300 dark:text-gray-600"><AlertCircle className="w-10 h-10 mb-2" /><p className="text-sm">Sem dados</p></div>
+                            )}
+                        </div>
+                    </div>
+                </div>
+
+                {/* Gráficos Row 2 */}
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    <div className="bg-white dark:bg-gray-800 p-6 md:p-8 rounded-3xl border border-gray-100 dark:border-gray-700 shadow-sm flex flex-col min-h-[400px]">
+                        <h3 className="text-lg font-bold text-gray-800 dark:text-white mb-6 flex items-center gap-2">
+                            <MapPin className="w-5 h-5 text-green-600 dark:text-green-400" />
+                            Extra Fixo por Setor
+                        </h3>
+                        <div className="h-[300px] w-full">
+                            {dashboardData.fixedExtraBySector.length > 0 ? (
+                                <ResponsiveContainer width="99%" height={300} minWidth={0} minHeight={0}>
+                                    <BarChart data={dashboardData.fixedExtraBySector} layout="vertical" margin={{ top: 5, right: 30, left: 10, bottom: 5 }}>
+                                        <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke={isDarkMode ? '#374151' : '#e5e7eb'} />
+                                        <XAxis type="number" hide />
+                                        <YAxis dataKey="name" type="category" width={80} tick={{fontSize: 10, fill: isDarkMode ? '#9ca3af' : '#6b7280'}} />
+                                        <Tooltip 
+                                          formatter={(value: any) => formatCurrency(value)}
+                                          cursor={{fill: isDarkMode ? '#374151' : '#f3f4f6'}} 
+                                          contentStyle={{ backgroundColor: isDarkMode ? '#1f2937' : '#fff', borderColor: isDarkMode ? '#374151' : '#e5e7eb', color: isDarkMode ? '#f3f4f6' : '#111827' }} 
+                                        />
+                                        <Bar dataKey="value" fill="#16a34a" radius={[0, 4, 4, 0]} barSize={24}>
+                                            {dashboardData.fixedExtraBySector.map((entry, index) => (
+                                                <Cell key={`cell-${index}`} fill={COLORS[(index + 2) % COLORS.length]} />
+                                            ))}
+                                        </Bar>
+                                    </BarChart>
+                                </ResponsiveContainer>
+                            ) : (
+                                <div className="h-full flex flex-col items-center justify-center text-gray-300 dark:text-gray-600"><AlertCircle className="w-10 h-10 mb-2" /><p className="text-sm">Sem dados</p></div>
+                            )}
+                        </div>
+                    </div>
+
+                    <div className="bg-white dark:bg-gray-800 p-6 md:p-8 rounded-3xl border border-gray-100 dark:border-gray-700 shadow-sm flex flex-col min-h-[400px]">
+                        <h3 className="text-lg font-bold text-gray-800 dark:text-white mb-6 flex items-center gap-2">
+                            <MapPin className="w-5 h-5 text-blue-600 dark:text-blue-400" />
+                            Extra Registrado por Setor
+                        </h3>
+                        <div className="h-[300px] w-full">
+                            {dashboardData.registeredExtraBySector.length > 0 ? (
+                                <ResponsiveContainer width="99%" height={300} minWidth={0} minHeight={0}>
+                                    <BarChart data={dashboardData.registeredExtraBySector} layout="vertical" margin={{ top: 5, right: 30, left: 10, bottom: 5 }}>
+                                        <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke={isDarkMode ? '#374151' : '#e5e7eb'} />
+                                        <XAxis type="number" hide />
+                                        <YAxis dataKey="name" type="category" width={80} tick={{fontSize: 10, fill: isDarkMode ? '#9ca3af' : '#6b7280'}} />
+                                        <Tooltip 
+                                          formatter={(value: any) => formatCurrency(value)}
+                                          cursor={{fill: isDarkMode ? '#374151' : '#f3f4f6'}} 
+                                          contentStyle={{ backgroundColor: isDarkMode ? '#1f2937' : '#fff', borderColor: isDarkMode ? '#374151' : '#e5e7eb', color: isDarkMode ? '#f3f4f6' : '#111827' }} 
+                                        />
+                                        <Bar dataKey="value" fill="#2563eb" radius={[0, 4, 4, 0]} barSize={24}>
+                                            {dashboardData.registeredExtraBySector.map((entry, index) => (
+                                                <Cell key={`cell-${index}`} fill={COLORS[(index + 4) % COLORS.length]} />
+                                            ))}
+                                        </Bar>
+                                    </BarChart>
                                 </ResponsiveContainer>
                             ) : (
                                 <div className="h-full flex flex-col items-center justify-center text-gray-300 dark:text-gray-600"><AlertCircle className="w-10 h-10 mb-2" /><p className="text-sm">Sem dados</p></div>

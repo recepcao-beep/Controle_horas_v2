@@ -135,7 +135,7 @@ app.get('/api/sheets/load', async (req, res) => {
     console.error('[API] Error loading sheets data:', error);
     
     // Handle 404 specifically
-    if (error.code === 404 || (error.message && error.message.includes('Requested entity was not found'))) {
+    if (error.code === 404 || error.status === 404 || error.response?.status === 404 || (error.message && error.message.includes('Requested entity was not found'))) {
       return res.status(404).json({ 
         error: 'Planilha não encontrada. Verifique se o ID ou URL da planilha está correto e se a Conta de Serviço tem permissão de acesso (Editor).' 
       });
@@ -255,7 +255,7 @@ app.post('/api/sheets/sync', async (req, res) => {
   } catch (error: any) {
     console.error('Error syncing sheets data:', error);
     
-    if (error.code === 404 || (error.message && error.message.includes('Requested entity was not found'))) {
+    if (error.code === 404 || error.status === 404 || error.response?.status === 404 || (error.message && error.message.includes('Requested entity was not found'))) {
       return res.status(404).json({ 
         success: false,
         error: 'Planilha não encontrada. Verifique se o ID ou URL da planilha está correto e se a Conta de Serviço tem permissão de acesso (Editor).' 
@@ -283,6 +283,12 @@ app.post('/api/sheets/close', async (req, res) => {
     res.json({ success: true });
   } catch (error: any) {
     console.error('Error performing closing:', error);
+    if (error.code === 404 || error.status === 404 || error.response?.status === 404 || (error.message && error.message.includes('Requested entity was not found'))) {
+      return res.status(404).json({ 
+        success: false,
+        error: 'Planilha não encontrada. Verifique se o ID ou URL da planilha está correto e se a Conta de Serviço tem permissão de acesso (Editor).' 
+      });
+    }
     res.status(500).json({ success: false, error: error.message });
   }
 });
