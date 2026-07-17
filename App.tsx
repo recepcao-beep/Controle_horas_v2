@@ -755,11 +755,16 @@ const App: React.FC = () => {
   }, [sectors, employees, requests, dbUrl, scriptUrl, folderRegId, folderFixoId, overtimeMultiplier, valeTransporteValue, isInitialLoad]);
 
   // --- Handlers ---
+  const ADMIN_PASSWORD = '1a2b3c';
+  
   const handleAdminLogin = () => {
-    // any password allows entry - as requested to "remove protection"
-    setIsAuth(true);
-    setState(prev => ({ ...prev, view: 'ADMIN' }));
-    setAdminPassword('');
+    if (adminPassword === ADMIN_PASSWORD) {
+      setIsAuth(true);
+      setState(prev => ({ ...prev, view: 'ADMIN' }));
+      setAdminPassword('');
+    } else {
+      setAlertMessage('Senha incorreta.');
+    }
   };
 
   const generateAccessLink = () => {
