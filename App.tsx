@@ -153,6 +153,8 @@ const App: React.FC = () => {
   // Edição e Controle de Acesso
   const [editingRequestId, setEditingRequestId] = useState<string | null>(null);
   const [editJustification, setEditJustification] = useState('');
+  const [editingRequestSectorId, setEditingRequestSectorId] = useState('');
+  const [printMode, setPrintMode] = useState<EmployeeType | null>(null);
   
   const extractSpreadsheetId = (input: string) => {
     if (!input) return '';
@@ -569,6 +571,97 @@ const App: React.FC = () => {
     window.open(printUrl, '_blank');
   };
 
+  const formatShortDate = (date: string) => {
+    if (!date) return '';
+    const [year, month, day] = date.split('-');
+    const d = new Date(Number(year), Number(month) - 1, Number(day));
+    return d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
+  };
+
+  const getWeekRangeLabel = (weekStarting: string) => {
+    if (!weekStarting) return '';
+    const [year, month, day] = weekStarting.split('-');
+    const start = new Date(Number(year), Number(month) - 1, Number(day));
+    const end = new Date(start);
+    end.setDate(start.getDate() + 6);
+    return `${formatShortDate(weekStarting)} ate ${end.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })}`;
+  };
+
+  const getRecordHours = (record: TimeRecord, type: EmployeeType) => {
+    if (!record.realEntry || !record.realExit) return 0;
+
+    if (type === EmployeeType.FIXO || record.isFolgaVendida) {
+      let diff = timeToDecimal(record.realExit) - timeToDecimal(record.realEntry);
+      if (diff < 0) diff += 24;
+      return Math.max(diff, 0);
+    }
+
+    let total = 0;
+    if (record.punchEntry) {
+      const diff = timeToDecimal(record.punchEntry) - timeToDecimal(record.realEntry);
+      if (diff > 0) total += diff;
+    }
+    if (record.punchExit) {
+      const diff = timeToDecimal(record.realExit) - timeToDecimal(record.punchExit);
+      if (diff > 0) total += diff;
+    }
+    return total;
+  };
+
+  const chunkItems = <T,>(items: T[], size: number): T[][] => {
+    const chunks: T[][] = [];
+    for (let i = 0; i < items.length; i += size) chunks.push(items.slice(i, i + size));
+    return chunks;
+  };
+
+  const printableFixedPages = useMemo(() => {
+    const approvedFixed = requests
+      .filter(r => r.status === RequestStatus.APROVADO && r.employeeType === EmployeeType.FIXO)
+      .sort((a, b) => a.sectorName.localeCompare(b.sectorName) || a.employeeName.localeCompare(b.employeeName));
+
+    return sectors.flatMap(sector => {
+      const sectorRequests = approvedFixed.filter(r => String(r.sectorId) === String(sector.id));
+      return chunkItems(sectorRequests, 10).map((pageRequests, idx) => ({
+        sector,
+        pageRequests,
+        part: idx + 1
+      }));
+    });
+  }, [requests, sectors]);
+
+  const printableRegisteredPages = useMemo(() => {
+    const approvedRegistered = requests
+      .filter(r => r.status === RequestStatus.APROVADO && r.employeeType === EmployeeType.REGISTRADO)
+      .sort((a, b) => a.sectorName.localeCompare(b.sectorName) || a.employeeName.localeCompare(b.employeeName));
+    return chunkItems(approvedRegistered, 2);
+  }, [requests]);
+
+  const handlePrintExtras = (type: EmployeeType) => {
+    const hasItems = type === EmployeeType.FIXO ? printableFixedPages.length > 0 : printableRegisteredPages.length > 0;
+    if (!hasItems) {
+      setAlertMessage(`Nenhum HE ${type === EmployeeType.FIXO ? 'Fixo' : 'Registrado'} aprovado para imprimir.`);
+      return;
+    }
+    setPrintMode(type);
+  };
+
+  useEffect(() => {
+    if (!printMode) return;
+    const previousTitle = document.title;
+    document.title = printMode === EmployeeType.FIXO ? 'HE-FIXO' : 'HE-REGISTRADO';
+    const resetPrintMode = () => {
+      document.title = previousTitle;
+      setPrintMode(null);
+    };
+    window.addEventListener('afterprint', resetPrintMode, { once: true });
+    const timer = window.setTimeout(() => window.print(), 250);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener('afterprint', resetPrintMode);
+      document.title = previousTitle;
+    };
+  }, [printMode]);
+
   const exportToPDF = async () => {
     if (!scriptUrl) {
       setAlertMessage("Configure a URL do Apps Script primeiro.");
@@ -784,16 +877,21 @@ const App: React.FC = () => {
       const originalReq = requests.find(r => r.id === editingRequestId);
       if (originalReq) {
         targetEmployeeId = originalReq.employeeId;
-        targetSectorId = originalReq.sectorId;
+        targetSectorId = editingRequestSectorId || originalReq.sectorId;
         targetFlowType = originalReq.employeeType;
       }
     }
 
     const employee = employees.find(e => String(e.id) === String(targetEmployeeId));
-    const sector = sectors.find(s => String(s.id) === String(employee?.sectorId || targetSectorId));
+    const sector = sectors.find(s => String(s.id) === String(targetFlowType === EmployeeType.REGISTRADO ? (employee?.sectorId || targetSectorId) : targetSectorId));
     
     if (targetFlowType === EmployeeType.REGISTRADO && !employee) {
       setAlertMessage("Erro: Dados do funcionário não encontrados para recálculo.");
+      return;
+    }
+
+    if (targetFlowType === EmployeeType.FIXO && !sector) {
+      setAlertMessage("Selecione um setor válido para o HE-FIXO.");
       return;
     }
 
@@ -860,6 +958,8 @@ const App: React.FC = () => {
     if (editingRequestId) {
       setRequests(requests.map(r => r.id === editingRequestId ? {
         ...r, 
+        sectorId: sector?.id || targetSectorId,
+        sectorName: sector?.name || r.sectorName,
         records: modalRecords, 
         calculatedValue: totalPayment, 
         totalTimeDecimal: totalDiffHours,
@@ -867,6 +967,7 @@ const App: React.FC = () => {
       } : r));
       setEditingRequestId(null);
       setEditJustification('');
+      setEditingRequestSectorId('');
     } else {
       const newReq: TimeRequest = {
         id: Math.random().toString(36).substr(2, 9),
@@ -1037,6 +1138,7 @@ const App: React.FC = () => {
           )}
           <button onClick={() => {
             setEditingRequestId(req.id);
+            setEditingRequestSectorId(req.sectorId);
             setModalRecords(JSON.parse(JSON.stringify(req.records)));
             setCurrentWeek(req.weekStarting);
             setEditJustification(req.editJustification || '');
@@ -1128,7 +1230,11 @@ const App: React.FC = () => {
     <div className="h-full flex flex-col gap-6">
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center bg-white dark:bg-gray-800 p-6 rounded-3xl shadow-sm border border-gray-100 dark:border-gray-700 gap-4">
         <h2 className="text-xl md:text-2xl font-black text-gray-800 dark:text-gray-200">Fluxo de Solicitações</h2>
-        <button onClick={() => syncDatabase({ sectors, employees, requests })} className="w-full md:w-auto flex items-center justify-center gap-2 bg-blue-600 text-white px-4 py-3 rounded-xl text-sm font-bold shadow-lg shadow-blue-100 dark:shadow-none hover:bg-blue-700 active:scale-95 transition-transform"><RefreshCw className="w-4 h-4" /> Forçar Sincronização</button>
+        <div className="w-full md:w-auto flex flex-col sm:flex-row gap-2">
+          <button onClick={() => handlePrintExtras(EmployeeType.FIXO)} className="w-full sm:w-auto flex items-center justify-center gap-2 bg-green-600 text-white px-4 py-3 rounded-xl text-sm font-bold shadow-lg shadow-green-100 dark:shadow-none hover:bg-green-700 active:scale-95 transition-transform"><Printer className="w-4 h-4" /> Imprimir HE-FIXO</button>
+          <button onClick={() => handlePrintExtras(EmployeeType.REGISTRADO)} className="w-full sm:w-auto flex items-center justify-center gap-2 bg-gray-800 dark:bg-gray-700 text-white px-4 py-3 rounded-xl text-sm font-bold shadow-lg shadow-gray-100 dark:shadow-none hover:bg-gray-900 dark:hover:bg-gray-600 active:scale-95 transition-transform"><Printer className="w-4 h-4" /> Imprimir HE-Reg.</button>
+          <button onClick={() => syncDatabase({ sectors, employees, requests })} className="w-full sm:w-auto flex items-center justify-center gap-2 bg-blue-600 text-white px-4 py-3 rounded-xl text-sm font-bold shadow-lg shadow-blue-100 dark:shadow-none hover:bg-blue-700 active:scale-95 transition-transform"><RefreshCw className="w-4 h-4" /> Forçar Sincronização</button>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 flex-1 min-h-0 pb-20 md:pb-0">
@@ -2046,8 +2152,139 @@ function testeManual() {
 
 `
 
+  const PrintStyles = () => (
+    <style>{`
+      .print-root { display: none; }
+      @media print {
+        @page { size: A4 portrait; margin: 8mm; }
+        body { background: #fff !important; color: #000 !important; }
+        body * { visibility: hidden !important; }
+        .print-root, .print-root * { visibility: visible !important; }
+        .print-root { display: block !important; position: absolute; inset: 0; width: 100%; background: #fff; color: #000; font-family: Arial, sans-serif; }
+        .print-page { width: 194mm; min-height: 281mm; padding: 0; page-break-after: always; break-after: page; box-sizing: border-box; }
+        .print-page:last-child { page-break-after: auto; break-after: auto; }
+        .print-sheet { border: 1px solid #000; width: 100%; height: 100%; box-sizing: border-box; }
+        .print-header { display: grid; grid-template-columns: 1fr auto auto; gap: 14px; align-items: center; border-bottom: 1px solid #000; padding: 4px 8px; font-size: 13px; font-weight: 700; }
+        .print-fixed-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7mm 9mm; padding: 7mm 8mm; }
+        .print-fixed-card { display: grid; grid-template-columns: 1fr 18mm; gap: 2mm; align-items: start; break-inside: avoid; }
+        .print-fixed-table, .print-registered-table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 8px; }
+        .print-fixed-table th, .print-fixed-table td, .print-registered-table th, .print-registered-table td { border: 1px solid #000; padding: 2px; height: 13px; overflow: hidden; }
+        .print-fixed-table th, .print-registered-table th { font-weight: 700; text-align: center; }
+        .print-gray { background: #d9d9d9 !important; }
+        .print-yellow { background: #ffff00 !important; }
+        .print-total { font-weight: 700; }
+        .print-value { font-size: 12px; font-weight: 700; line-height: 1.2; padding-top: 24px; }
+        .print-registered-slot { border: 1px solid #000; margin-bottom: 7mm; break-inside: avoid; }
+        .print-registered-title { display: grid; grid-template-columns: 1fr 40mm; border-bottom: 1px solid #000; text-align: center; font-size: 11px; font-weight: 700; }
+        .print-registered-title > div { padding: 4px; }
+        .print-registered-subtitle { border-bottom: 1px solid #000; text-align: center; font-size: 7px; font-weight: 700; padding: 2px; }
+        .print-signatures { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12mm; padding: 8px 12mm 12px; font-size: 8px; text-align: center; }
+        .print-signatures span { display: block; border-top: 1px solid #000; padding-top: 3px; }
+      }
+    `}</style>
+  );
+
+  const renderFixedPrintCard = (req?: TimeRequest, sector?: Sector) => {
+    const rows = Array.from({ length: 7 }, (_, idx) => req?.records[idx]);
+    return (
+      <div className="print-fixed-card">
+        <table className="print-fixed-table">
+          <tbody>
+            <tr><td colSpan={5}><strong>Nome Completo:</strong> {req?.employeeName || ''}</td></tr>
+            <tr className="print-gray"><td colSpan={5}><strong>Vale Transporte:</strong> {formatCurrency(valeTransporteValue)} (X)</td></tr>
+            <tr><th>Data</th><th>Entrada</th><th>Saida</th><th>Ass. Do Trabalhador</th><th>QTD H</th></tr>
+            {rows.map((record, idx) => (
+              <tr key={idx}>
+                <td>{record ? formatShortDate(record.date) : ''}</td>
+                <td>{record?.realEntry || ''}</td>
+                <td>{record?.realExit || ''}</td>
+                <td></td>
+                <td>{record && getRecordHours(record, EmployeeType.FIXO) > 0 ? formatDecimalHours(getRecordHours(record, EmployeeType.FIXO)).replace('h ', ':').replace('m', '') : ''}</td>
+              </tr>
+            ))}
+            <tr className="print-total"><td colSpan={3}>Total horas: {req ? formatDecimalHours(req.totalTimeDecimal) : ''}</td><td></td><td></td></tr>
+          </tbody>
+        </table>
+        <div className="print-value">
+          <div>Valor Extra</div>
+          <div>{formatCurrency(sector?.fixedRate || 0)}</div>
+        </div>
+      </div>
+    );
+  };
+
+  const renderRegisteredPrintSlot = (req?: TimeRequest) => {
+    const rows = Array.from({ length: 7 }, (_, idx) => req?.records[idx]);
+    return (
+      <div className="print-registered-slot">
+        <div className="print-header">
+          <span>SETOR: {req?.sectorName || ''}</span>
+          <span>DATA: {req ? getWeekRangeLabel(req.weekStarting) : ''}</span>
+          <span></span>
+        </div>
+        <div className="print-registered-title">
+          <div>HE REGISTRADO FECHAMENTO SEMANAL</div>
+          <div className="print-yellow">Segunda Feira as<br />09:00h</div>
+        </div>
+        <div className="print-registered-subtitle">NOME COMPLETO: {req?.employeeName || ''}</div>
+        <table className="print-registered-table">
+          <tbody>
+            <tr><th rowSpan={2}>DATA</th><th>A<br />REAL ENTRADA</th><th>B<br />ENTRADA REGISTRADA NO PONTO</th><th>TOTAL</th><th>C<br />SAIDA REGISTRADA NO PONTO</th><th>D<br />REAL SAIDA</th><th>TOTAL</th><th>HORAS EXTRAS TOTAIS</th></tr>
+            <tr><th colSpan={3} className="print-yellow">HORAS EXTRAS APOS A ENTRADA DO PONTO</th><th colSpan={3} className="print-yellow">HORAS EXTRAS APOS A SAIDA DO PONTO</th></tr>
+            {rows.map((record, idx) => (
+              <tr key={idx}>
+                <td>{record ? formatShortDate(record.date) : ''}</td>
+                <td className="print-gray">{record?.realEntry || ''}</td>
+                <td>{record?.punchEntry || ''}</td>
+                <td></td>
+                <td>{record?.punchExit || ''}</td>
+                <td className="print-gray">{record?.realExit || ''}</td>
+                <td></td>
+                <td>{record && getRecordHours(record, EmployeeType.REGISTRADO) > 0 ? formatDecimalHours(getRecordHours(record, EmployeeType.REGISTRADO)) : ''}</td>
+              </tr>
+            ))}
+            <tr><td colSpan={8}>Obs:</td></tr>
+          </tbody>
+        </table>
+        <div className="print-signatures">
+          <span>Ass do Lider de Setor</span>
+          <span>Ass do Gerente</span>
+          <span>Ass do funcionario</span>
+        </div>
+      </div>
+    );
+  };
+
+  const PrintableExtras = () => (
+    <div className="print-root" aria-hidden={printMode ? 'false' : 'true'}>
+      {printMode === EmployeeType.FIXO && printableFixedPages.map((page, pageIdx) => (
+        <section className="print-page" key={`${page.sector.id}-${page.part}`}>
+          <div className="print-sheet">
+            <div className="print-header">
+              <span>Setor: {page.sector.name}{page.part > 1 ? ` - Parte ${page.part}` : ''}</span>
+              <span>{page.pageRequests[0] ? getWeekRangeLabel(page.pageRequests[0].weekStarting) : ''}</span>
+              <span>{pageIdx + 1}</span>
+            </div>
+            <div className="print-fixed-grid">
+              {Array.from({ length: 10 }, (_, idx) => renderFixedPrintCard(page.pageRequests[idx], page.sector))}
+            </div>
+          </div>
+        </section>
+      ))}
+
+      {printMode === EmployeeType.REGISTRADO && printableRegisteredPages.map((page, pageIdx) => (
+        <section className="print-page" key={`registrado-${pageIdx}`}>
+          {Array.from({ length: 2 }, (_, idx) => renderRegisteredPrintSlot(page[idx]))}
+          <div style={{ textAlign: 'right', fontSize: 8, fontWeight: 700 }}>{pageIdx + 1}</div>
+        </section>
+      ))}
+    </div>
+  );
+
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 transition-colors duration-200">
+      <PrintStyles />
+      <PrintableExtras />
       <button 
         onClick={() => setIsDarkMode(!isDarkMode)} 
         className="fixed top-4 right-4 p-3 rounded-full bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-200 shadow-lg hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors z-50 border border-gray-200 dark:border-gray-700"
@@ -2786,11 +3023,20 @@ function testeManual() {
       {showFormModal && (
         <div className="fixed inset-0 bg-white dark:bg-gray-900 md:bg-black/60 md:dark:bg-black/80 md:backdrop-blur-sm z-[60] flex items-center justify-center md:p-4 overflow-hidden">
           <div className="bg-white dark:bg-gray-800 md:rounded-3xl shadow-2xl w-full max-w-4xl h-full md:max-h-[90vh] overflow-y-auto p-4 md:p-8 relative flex flex-col">
-            <button onClick={() => { setShowFormModal(false); setEditingRequestId(null); }} className="absolute top-4 right-4 text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 bg-gray-100 dark:bg-gray-700 rounded-full p-1"><XCircle className="w-8 h-8" /></button>
+            <button onClick={() => { setShowFormModal(false); setEditingRequestId(null); setEditingRequestSectorId(''); }} className="absolute top-4 right-4 text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 bg-gray-100 dark:bg-gray-700 rounded-full p-1"><XCircle className="w-8 h-8" /></button>
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6 mt-2 md:mt-0">
               <h2 className="text-2xl font-bold dark:text-white">Fechamento Semanal</h2>
               <div className="flex items-center gap-4 bg-gray-50 dark:bg-gray-900 p-2 rounded-xl border border-gray-100 dark:border-gray-700"><span className="text-sm font-medium text-gray-500 dark:text-gray-400">Semana:</span><input type="date" className="bg-transparent text-black dark:text-white outline-none text-sm font-bold" value={currentWeek} onChange={(e) => !editingRequestId && setCurrentWeek(e.target.value)} disabled={!!editingRequestId} /></div>
             </div>
+            {editingRequestId && requests.find(r => r.id === editingRequestId)?.employeeType === EmployeeType.FIXO && (
+              <div className="mb-5">
+                <label className="block text-sm font-semibold mb-2 dark:text-gray-200">Setor do HE-FIXO</label>
+                <select className="w-full p-4 border dark:border-gray-700 rounded-xl bg-white dark:bg-gray-800 text-black dark:text-white text-base focus:border-blue-500 outline-none" value={editingRequestSectorId} onChange={(e) => setEditingRequestSectorId(e.target.value)}>
+                  <option value="">Selecione...</option>
+                  {sectors.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                </select>
+              </div>
+            )}
             
             <div className="space-y-4 flex-1 overflow-y-auto pb-20">
               {modalRecords.map((r, idx) => {
@@ -2826,7 +3072,7 @@ function testeManual() {
             </div>
 
             <div className="mt-4 pt-4 border-t border-gray-100 dark:border-gray-700 flex gap-3 bg-white dark:bg-gray-800 sticky bottom-0 z-10 pb-6 md:pb-0">
-                <button onClick={() => { setShowFormModal(false); setEditingRequestId(null); }} className="flex-1 py-4 bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 font-bold rounded-xl active:scale-95 transition">Cancelar</button>
+                <button onClick={() => { setShowFormModal(false); setEditingRequestId(null); setEditingRequestSectorId(''); }} className="flex-1 py-4 bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 font-bold rounded-xl active:scale-95 transition">Cancelar</button>
                 <button onClick={submitRequest} className="flex-[2] py-4 bg-blue-600 text-white font-bold rounded-xl shadow-lg active:scale-95 transition">Salvar</button>
             </div>
           </div>
