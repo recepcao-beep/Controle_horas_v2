@@ -33,6 +33,7 @@ import {
   Grid,
   List,
   Printer,
+  ExternalLink,
   Save
 } from 'lucide-react';
 import { 
@@ -154,12 +155,20 @@ const App: React.FC = () => {
   const [editingRequestId, setEditingRequestId] = useState<string | null>(null);
   const [editJustification, setEditJustification] = useState('');
   const [editingRequestSectorId, setEditingRequestSectorId] = useState('');
-  const [printMode, setPrintMode] = useState<EmployeeType | null>(null);
   
   const extractSpreadsheetId = (input: string) => {
     if (!input) return '';
     const match = input.match(/\/d\/([-\w]{25,})/) || input.match(/^([-\w]{25,})$/);
     return match ? (match[1] || match[0]) : input;
+  };
+
+  const openSpreadsheet = () => {
+    const target = dbUrl?.trim() || DEFAULT_SHEET_URL;
+    const spreadsheetId = extractSpreadsheetId(target);
+    const url = target.startsWith('http')
+      ? target
+      : `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`;
+    window.open(url, '_blank', 'noopener,noreferrer');
   };
 
   const [isDarkMode, setIsDarkMode] = useState(() => {
@@ -570,112 +579,6 @@ const App: React.FC = () => {
     const printUrl = `/api/drive/download/${fileId}`;
     window.open(printUrl, '_blank');
   };
-
-  const formatShortDate = (date: string) => {
-    if (!date) return '';
-    const [year, month, day] = date.split('-');
-    const d = new Date(Number(year), Number(month) - 1, Number(day));
-    return d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
-  };
-
-  const formatFullDate = (date: string) => {
-    if (!date) return '';
-    const [year, month, day] = date.split('-');
-    const d = new Date(Number(year), Number(month) - 1, Number(day));
-    return d.toLocaleDateString('pt-BR');
-  };
-
-  const getWeekEndDate = (weekStarting: string) => {
-    if (!weekStarting) return '';
-    const [year, month, day] = weekStarting.split('-');
-    const end = new Date(Number(year), Number(month) - 1, Number(day));
-    end.setDate(end.getDate() + 6);
-    return end.toLocaleDateString('pt-BR');
-  };
-
-  const getWeekRangeLabel = (weekStarting: string) => {
-    if (!weekStarting) return '';
-    const [year, month, day] = weekStarting.split('-');
-    const start = new Date(Number(year), Number(month) - 1, Number(day));
-    const end = new Date(start);
-    end.setDate(start.getDate() + 6);
-    return `${formatShortDate(weekStarting)} ate ${end.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })}`;
-  };
-
-  const getRecordHours = (record: TimeRecord, type: EmployeeType) => {
-    if (!record.realEntry || !record.realExit) return 0;
-
-    if (type === EmployeeType.FIXO || record.isFolgaVendida) {
-      let diff = timeToDecimal(record.realExit) - timeToDecimal(record.realEntry);
-      if (diff < 0) diff += 24;
-      return Math.max(diff, 0);
-    }
-
-    let total = 0;
-    if (record.punchEntry) {
-      const diff = timeToDecimal(record.punchEntry) - timeToDecimal(record.realEntry);
-      if (diff > 0) total += diff;
-    }
-    if (record.punchExit) {
-      const diff = timeToDecimal(record.realExit) - timeToDecimal(record.punchExit);
-      if (diff > 0) total += diff;
-    }
-    return total;
-  };
-
-  const chunkItems = <T,>(items: T[], size: number): T[][] => {
-    const chunks: T[][] = [];
-    for (let i = 0; i < items.length; i += size) chunks.push(items.slice(i, i + size));
-    return chunks;
-  };
-
-  const printableFixedPages = useMemo(() => {
-    const approvedFixed = requests
-      .filter(r => r.status === RequestStatus.APROVADO && r.employeeType === EmployeeType.FIXO)
-      .sort((a, b) => a.sectorName.localeCompare(b.sectorName) || a.employeeName.localeCompare(b.employeeName));
-
-    return sectors.flatMap(sector => {
-      const sectorRequests = approvedFixed.filter(r => String(r.sectorId) === String(sector.id));
-      return chunkItems(sectorRequests, 10).map((pageRequests, idx) => ({
-        sector,
-        pageRequests,
-        part: idx + 1
-      }));
-    });
-  }, [requests, sectors]);
-
-  const printableRegisteredPages = useMemo(() => {
-    const approvedRegistered = requests
-      .filter(r => r.status === RequestStatus.APROVADO && r.employeeType === EmployeeType.REGISTRADO)
-      .sort((a, b) => a.sectorName.localeCompare(b.sectorName) || a.employeeName.localeCompare(b.employeeName));
-    return chunkItems(approvedRegistered, 2);
-  }, [requests]);
-
-  const handlePrintExtras = (type: EmployeeType) => {
-    const hasItems = type === EmployeeType.FIXO ? printableFixedPages.length > 0 : printableRegisteredPages.length > 0;
-    if (!hasItems) {
-      setAlertMessage(`Nenhum HE ${type === EmployeeType.FIXO ? 'Fixo' : 'Registrado'} aprovado para imprimir.`);
-      return;
-    }
-    setPrintMode(type);
-  };
-
-  useEffect(() => {
-    if (!printMode) return;
-    const previousTitle = document.title;
-    document.title = printMode === EmployeeType.FIXO ? 'HE-FIXO' : 'HE-REGISTRADO';
-    const resetPrintMode = () => {
-      document.title = previousTitle;
-      setPrintMode(null);
-    };
-    window.addEventListener('afterprint', resetPrintMode, { once: true });
-    const timer = window.setTimeout(() => window.print(), 250);
-    return () => {
-      window.clearTimeout(timer);
-      window.removeEventListener('afterprint', resetPrintMode);
-      document.title = previousTitle;
-    };
-  }, [printMode]);
 
   const exportToPDF = async () => {
     if (!scriptUrl) {
@@ -1246,8 +1149,6 @@ const App: React.FC = () => {
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center bg-white dark:bg-gray-800 p-6 rounded-3xl shadow-sm border border-gray-100 dark:border-gray-700 gap-4">
         <h2 className="text-xl md:text-2xl font-black text-gray-800 dark:text-gray-200">Fluxo de Solicitações</h2>
         <div className="w-full md:w-auto flex flex-col sm:flex-row gap-2">
-          <button onClick={() => handlePrintExtras(EmployeeType.FIXO)} className="w-full sm:w-auto flex items-center justify-center gap-2 bg-green-600 text-white px-4 py-3 rounded-xl text-sm font-bold shadow-lg shadow-green-100 dark:shadow-none hover:bg-green-700 active:scale-95 transition-transform"><Printer className="w-4 h-4" /> Imprimir HE-FIXO</button>
-          <button onClick={() => handlePrintExtras(EmployeeType.REGISTRADO)} className="w-full sm:w-auto flex items-center justify-center gap-2 bg-gray-800 dark:bg-gray-700 text-white px-4 py-3 rounded-xl text-sm font-bold shadow-lg shadow-gray-100 dark:shadow-none hover:bg-gray-900 dark:hover:bg-gray-600 active:scale-95 transition-transform"><Printer className="w-4 h-4" /> Imprimir HE-Reg.</button>
           <button onClick={() => syncDatabase({ sectors, employees, requests })} className="w-full sm:w-auto flex items-center justify-center gap-2 bg-blue-600 text-white px-4 py-3 rounded-xl text-sm font-bold shadow-lg shadow-blue-100 dark:shadow-none hover:bg-blue-700 active:scale-95 transition-transform"><RefreshCw className="w-4 h-4" /> Forçar Sincronização</button>
         </div>
       </div>
@@ -2167,206 +2068,8 @@ function testeManual() {
 
 `
 
-  const PrintStyles = () => (
-    <style>{`
-      .print-root { display: none; }
-      @media print {
-        @page { size: A4 portrait; margin: 6mm; }
-        body { background: #fff !important; color: #000 !important; }
-        .app-shell > :not(.print-root):not(style) { display: none !important; }
-        .print-root { display: block !important; position: static !important; width: 100%; background: #fff; color: #000; font-family: Arial, sans-serif; }
-        .print-page { width: 100%; height: auto; min-height: 0; padding: 0; page-break-after: always; break-after: page; box-sizing: border-box; overflow: hidden; }
-        .print-page:last-child { page-break-after: auto; break-after: auto; }
-        .print-sheet { border: 1px solid #000; width: 100%; box-sizing: border-box; }
-        .print-header { display: grid; grid-template-columns: 1fr auto auto; gap: 14px; align-items: center; border-bottom: 1px solid #000; padding: 4px 8px; font-size: 13px; font-weight: 700; }
-        .print-fixed-sheet { border: 1px solid #000; width: 100%; box-sizing: border-box; }
-        .print-fixed-header { display: grid; grid-template-columns: 20mm 1fr 37mm 13mm 37mm 9mm; align-items: center; border-bottom: 1px solid #000; font-size: 14px; font-weight: 700; }
-        .print-fixed-header > div { padding: 3px 6px; min-height: 14px; }
-        .print-fixed-header .print-fixed-label { font-size: 11px; }
-        .print-fixed-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6mm 8mm; padding: 7mm 6mm 6mm; }
-        .print-fixed-card { display: grid; grid-template-columns: 1fr 16mm; gap: 1mm; align-items: start; break-inside: avoid; }
-        .print-fixed-table, .print-registered-table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 7.5px; }
-        .print-fixed-table th, .print-fixed-table td, .print-registered-table th, .print-registered-table td { border: 1px solid #000; padding: 1.5px; height: 11px; overflow: hidden; }
-        .print-fixed-table th, .print-registered-table th { font-weight: 700; text-align: center; }
-        .print-fixed-table { font-size: 8px; font-weight: 700; }
-        .print-fixed-table th, .print-fixed-table td { height: 13px; padding: 2px; }
-        .print-fixed-table .print-name-row td, .print-fixed-table .print-vt-row td { text-align: left; }
-        .print-fixed-table .print-vt-row td { background: #d9d9d9 !important; }
-        .print-fixed-table .print-date-cell { text-align: center; font-family: Calibri, Arial, sans-serif; font-size: 11px; }
-        .print-fixed-table .print-total-row td { height: 15px; text-align: left; }
-        .print-fixed-table col.print-fixed-date { width: 23%; }
-        .print-fixed-table col.print-fixed-time { width: 17%; }
-        .print-fixed-table col.print-fixed-sign { width: 35%; }
-        .print-fixed-table col.print-fixed-hours { width: 12%; }
-        .print-gray { background: #d9d9d9 !important; }
-        .print-yellow { background: #ffff00 !important; }
-        .print-total { font-weight: 700; }
-        .print-value { font-size: 10px; font-weight: 700; line-height: 1.2; padding-top: 9px; text-align: left; }
-        .print-value strong { display: block; font-size: 12px; margin-top: 2px; }
-        .print-registered-page { padding: 10mm 8mm 0; }
-        .print-registered-slot { border: 1px solid #000; margin-bottom: 14mm; break-inside: avoid; }
-        .print-registered-slot:last-of-type { margin-bottom: 4mm; }
-        .print-registered-head { display: grid; grid-template-columns: 1fr 26mm 27mm 12mm 27mm; align-items: center; border-bottom: 1px solid #000; font-size: 7.5px; font-weight: 700; }
-        .print-registered-head > div { padding: 2px 4px; min-height: 12px; }
-        .print-registered-title { display: grid; grid-template-columns: 1fr 38mm; border-bottom: 1px solid #000; text-align: center; font-size: 12px; font-weight: 700; }
-        .print-registered-title > div { padding: 4px; }
-        .print-registered-name { border-bottom: 1px solid #000; font-size: 7.5px; font-weight: 700; padding: 2px 4px; }
-        .print-registered-note { border-bottom: 1px solid #000; text-align: center; font-size: 7px; font-weight: 700; padding: 2px; }
-        .print-registered-legend { display: grid; grid-template-columns: 28mm 1fr; border-bottom: 1px solid #000; font-size: 7px; font-weight: 700; }
-        .print-registered-legend > div { padding: 2px 4px; }
-        .print-registered-table { font-size: 7px; }
-        .print-registered-table th, .print-registered-table td { height: 16px; padding: 2px; }
-        .print-registered-table .print-small-row th { height: 11px; padding: 1px; font-size: 6px; }
-        .print-registered-table .print-date-title { font-size: 16px; }
-        .print-signatures { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12mm; padding: 9px 12mm 13px; font-size: 7px; text-align: center; }
-        .print-signatures span { display: block; border-top: 1px solid #000; padding-top: 3px; }
-      }
-    `}</style>
-  );
-
-  const renderFixedPrintCard = (req?: TimeRequest, sector?: Sector) => {
-    const rows = Array.from({ length: 7 }, (_, idx) => req?.records[idx]);
-    return (
-      <div className="print-fixed-card">
-        <table className="print-fixed-table">
-          <colgroup>
-            <col className="print-fixed-date" />
-            <col className="print-fixed-time" />
-            <col className="print-fixed-time" />
-            <col className="print-fixed-sign" />
-            <col className="print-fixed-hours" />
-          </colgroup>
-          <tbody>
-            <tr className="print-name-row"><td colSpan={5}>Nome Completo:&nbsp; {req?.employeeName || ''}</td></tr>
-            <tr className="print-vt-row"><td colSpan={5}>Vale Transporte: {formatCurrency(10)} (X)</td></tr>
-            <tr><th>Data</th><th>Entrada</th><th>Saida</th><th>Ass. Do Trabalhador</th><th>QTD H</th></tr>
-            {rows.map((record, idx) => (
-              <tr key={idx}>
-                <td className="print-date-cell">{record ? formatShortDate(record.date) : ''}</td>
-                <td>{record?.realEntry || ''}</td>
-                <td>{record?.realExit || ''}</td>
-                <td></td>
-                <td>{record && getRecordHours(record, EmployeeType.FIXO) > 0 ? formatDecimalHours(getRecordHours(record, EmployeeType.FIXO)).replace('h ', ':').replace('m', '') : ''}</td>
-              </tr>
-            ))}
-            <tr className="print-total print-total-row"><td colSpan={3}>Total horas:</td><td></td><td>{req ? formatDecimalHours(req.totalTimeDecimal).replace('h ', ':').replace('m', '') : ''}</td></tr>
-          </tbody>
-        </table>
-        <div className="print-value">
-          <div>Valor Extra</div>
-          <strong>{formatCurrency(sector?.fixedRate || 0)}</strong>
-        </div>
-      </div>
-    );
-  };
-
-  const renderRegisteredPrintSlot = (req?: TimeRequest) => {
-    const rows = Array.from({ length: 7 }, (_, idx) => req?.records[idx]);
-    return (
-      <div className="print-registered-slot">
-        <div className="print-registered-head">
-          <div>SETOR:</div>
-          <div>{req?.sectorName || ''}</div>
-          <div>DATA:</div>
-          <div>{req ? formatShortDate(req.weekStarting) : ''}</div>
-          <div>ATE {req ? getWeekRangeLabel(req.weekStarting).split(' ate ')[1] : ''}</div>
-        </div>
-        <div className="print-registered-title">
-          <div>HE REGISTRADO FECHAMENTO SEMANAL</div>
-          <div className="print-yellow">Segunda Feira as<br />09:00h</div>
-        </div>
-        <div className="print-registered-name">NOME COMPLETO: {req?.employeeName || ''}</div>
-        <div className="print-registered-note">Todas as Horas Anotadas serao conferidas com o Registro de Ponto ja registrado pelo colaborador ( coluna B E C )</div>
-        <div className="print-registered-legend">
-          <div>COLUNA B e C =</div>
-          <div style={{ textAlign: 'center' }}>Serao de Anotacoes do RH</div>
-        </div>
-        <div className="print-registered-legend">
-          <div>COLUNA A e D =</div>
-          <div style={{ textAlign: 'center' }}>Serao de anotacoes do lider ( semanalmente )</div>
-        </div>
-        <table className="print-registered-table">
-          <tbody>
-            <tr>
-              <th rowSpan={3} className="print-date-title">DATA</th>
-              <th>A</th>
-              <th>B</th>
-              <th></th>
-              <th>C</th>
-              <th>D</th>
-              <th></th>
-              <th rowSpan={3}>HORAS<br />EXTRAS<br />TOTAIS</th>
-            </tr>
-            <tr className="print-small-row">
-              <th colSpan={3} className="print-yellow">HORAS EXTRAS APOS A ENTRADA DO PONTO</th>
-              <th colSpan={3} className="print-yellow">HORAS EXTRAS APOS A SAIDA DO PONTO</th>
-            </tr>
-            <tr className="print-small-row">
-              <th>REAL ENTRADA</th>
-              <th>ENTRADA REGISTRADA NO PONTO</th>
-              <th>TOTAL</th>
-              <th>SAIDA REGISTRADA NO PONTO</th>
-              <th>REAL SAIDA</th>
-              <th>TOTAL</th>
-            </tr>
-            {rows.map((record, idx) => (
-              <tr key={idx}>
-                <td>{record ? formatShortDate(record.date) : ''}</td>
-                <td className="print-gray">{record?.realEntry || ''}</td>
-                <td>{record?.punchEntry || ''}</td>
-                <td></td>
-                <td>{record?.punchExit || ''}</td>
-                <td className="print-gray">{record?.realExit || ''}</td>
-                <td></td>
-                <td>{record && getRecordHours(record, EmployeeType.REGISTRADO) > 0 ? formatDecimalHours(getRecordHours(record, EmployeeType.REGISTRADO)) : ''}</td>
-              </tr>
-            ))}
-            <tr><td colSpan={8} style={{ height: 18 }}>Obs:</td></tr>
-          </tbody>
-        </table>
-        <div className="print-signatures">
-          <span>Ass do Lider de Setor</span>
-          <span>Ass do Gerente</span>
-          <span>Ass do funcionario</span>
-        </div>
-      </div>
-    );
-  };
-
-  const PrintableExtras = () => (
-    <div className="print-root" aria-hidden={printMode ? 'false' : 'true'}>
-      {printMode === EmployeeType.FIXO && printableFixedPages.map((page, pageIdx) => (
-        <section className="print-page" key={`${page.sector.id}-${page.part}`}>
-          <div className="print-fixed-sheet">
-            <div className="print-fixed-header">
-              <div className="print-fixed-label">Setor:</div>
-              <div>{page.sector.name}{page.part > 1 ? ` - Parte ${page.part}` : ''}</div>
-              <div>{page.pageRequests[0] ? formatFullDate(page.pageRequests[0].weekStarting) : ''}</div>
-              <div>até</div>
-              <div>{page.pageRequests[0] ? getWeekEndDate(page.pageRequests[0].weekStarting) : ''}</div>
-              <div></div>
-            </div>
-            <div className="print-fixed-grid">
-              {Array.from({ length: 10 }, (_, idx) => renderFixedPrintCard(page.pageRequests[idx], page.sector))}
-            </div>
-            <div style={{ textAlign: 'right', fontSize: 8, fontWeight: 700, padding: '0 2mm 1mm' }}>{pageIdx + 1}</div>
-          </div>
-        </section>
-      ))}
-
-      {printMode === EmployeeType.REGISTRADO && printableRegisteredPages.map((page, pageIdx) => (
-        <section className="print-page print-registered-page" key={`registrado-${pageIdx}`}>
-          {Array.from({ length: 2 }, (_, idx) => renderRegisteredPrintSlot(page[idx]))}
-          <div style={{ textAlign: 'right', fontSize: 8, fontWeight: 700 }}>{pageIdx + 1}</div>
-        </section>
-      ))}
-    </div>
-  );
-
   return (
     <div className="app-shell min-h-screen bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 transition-colors duration-200">
-      <PrintStyles />
-      <PrintableExtras />
       <button 
         onClick={() => setIsDarkMode(!isDarkMode)} 
         className="fixed top-4 right-4 p-3 rounded-full bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-200 shadow-lg hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors z-50 border border-gray-200 dark:border-gray-700"
@@ -2945,6 +2648,10 @@ function testeManual() {
                   <p className="text-xs text-gray-400 dark:text-gray-500 flex items-center gap-2"><AlertCircle className="w-3 h-3" /> Insira o ID da Planilha ou a URL completa do Google Sheets.</p>
                   <input type="text" placeholder="Ex: https://docs.google.com/spreadsheets/d/..." className="w-full p-4 border dark:border-gray-700 rounded-xl bg-white dark:bg-gray-800 text-black dark:text-white outline-none text-base focus:border-blue-500" value={dbUrl} onChange={(e) => setDbUrl(e.target.value)} />
                   <div className="flex flex-col md:flex-row gap-3">
+                    <button onClick={openSpreadsheet} className="flex-1 bg-white dark:bg-gray-800 border border-green-600 dark:border-green-500 text-green-700 dark:text-green-400 px-6 py-4 rounded-xl font-bold active:bg-green-50 dark:active:bg-gray-700 transition flex items-center justify-center gap-2">
+                      <ExternalLink className="w-5 h-5" />
+                      Abrir Planilha
+                    </button>
                     <button onClick={() => loadDatabase()} className="flex-1 bg-white dark:bg-gray-800 border border-blue-600 dark:border-blue-500 text-blue-600 dark:text-blue-400 px-6 py-4 rounded-xl font-bold active:bg-blue-50 dark:active:bg-gray-700 transition">Importar Dados</button>
                     <button onClick={exportToPDF} className="flex-1 bg-blue-600 text-white px-8 py-4 rounded-xl font-bold shadow-lg active:scale-95 transition">Exportar Drive</button>
                   </div>
