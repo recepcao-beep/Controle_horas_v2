@@ -578,6 +578,21 @@ const App: React.FC = () => {
     return d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
   };
 
+  const formatFullDate = (date: string) => {
+    if (!date) return '';
+    const [year, month, day] = date.split('-');
+    const d = new Date(Number(year), Number(month) - 1, Number(day));
+    return d.toLocaleDateString('pt-BR');
+  };
+
+  const getWeekEndDate = (weekStarting: string) => {
+    if (!weekStarting) return '';
+    const [year, month, day] = weekStarting.split('-');
+    const end = new Date(Number(year), Number(month) - 1, Number(day));
+    end.setDate(end.getDate() + 6);
+    return end.toLocaleDateString('pt-BR');
+  };
+
   const getWeekRangeLabel = (weekStarting: string) => {
     if (!weekStarting) return '';
     const [year, month, day] = weekStarting.split('-');
@@ -2164,15 +2179,28 @@ function testeManual() {
         .print-page:last-child { page-break-after: auto; break-after: auto; }
         .print-sheet { border: 1px solid #000; width: 100%; box-sizing: border-box; }
         .print-header { display: grid; grid-template-columns: 1fr auto auto; gap: 14px; align-items: center; border-bottom: 1px solid #000; padding: 4px 8px; font-size: 13px; font-weight: 700; }
-        .print-fixed-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4mm 7mm; padding: 5mm 6mm; }
-        .print-fixed-card { display: grid; grid-template-columns: 1fr 18mm; gap: 2mm; align-items: start; break-inside: avoid; }
+        .print-fixed-sheet { border: 1px solid #000; width: 100%; box-sizing: border-box; }
+        .print-fixed-header { display: grid; grid-template-columns: 20mm 1fr 37mm 13mm 37mm 9mm; align-items: center; border-bottom: 1px solid #000; font-size: 14px; font-weight: 700; }
+        .print-fixed-header > div { padding: 3px 6px; min-height: 14px; }
+        .print-fixed-header .print-fixed-label { font-size: 11px; }
+        .print-fixed-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6mm 8mm; padding: 7mm 6mm 6mm; }
+        .print-fixed-card { display: grid; grid-template-columns: 1fr 16mm; gap: 1mm; align-items: start; break-inside: avoid; }
         .print-fixed-table, .print-registered-table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 7.5px; }
         .print-fixed-table th, .print-fixed-table td, .print-registered-table th, .print-registered-table td { border: 1px solid #000; padding: 1.5px; height: 11px; overflow: hidden; }
         .print-fixed-table th, .print-registered-table th { font-weight: 700; text-align: center; }
+        .print-fixed-table { font-size: 8px; font-weight: 700; }
+        .print-fixed-table th, .print-fixed-table td { height: 13px; padding: 2px; }
+        .print-fixed-table .print-name-row td, .print-fixed-table .print-vt-row td { text-align: left; }
+        .print-fixed-table .print-total-row td { height: 15px; text-align: left; }
+        .print-fixed-table col.print-fixed-date { width: 23%; }
+        .print-fixed-table col.print-fixed-time { width: 17%; }
+        .print-fixed-table col.print-fixed-sign { width: 35%; }
+        .print-fixed-table col.print-fixed-hours { width: 12%; }
         .print-gray { background: #d9d9d9 !important; }
         .print-yellow { background: #ffff00 !important; }
         .print-total { font-weight: 700; }
-        .print-value { font-size: 10px; font-weight: 700; line-height: 1.2; padding-top: 20px; }
+        .print-value { font-size: 10px; font-weight: 700; line-height: 1.2; padding-top: 9px; text-align: left; }
+        .print-value strong { display: block; font-size: 12px; margin-top: 2px; }
         .print-registered-page { padding: 10mm 8mm 0; }
         .print-registered-slot { border: 1px solid #000; margin-bottom: 14mm; break-inside: avoid; }
         .print-registered-slot:last-of-type { margin-bottom: 4mm; }
@@ -2199,9 +2227,16 @@ function testeManual() {
     return (
       <div className="print-fixed-card">
         <table className="print-fixed-table">
+          <colgroup>
+            <col className="print-fixed-date" />
+            <col className="print-fixed-time" />
+            <col className="print-fixed-time" />
+            <col className="print-fixed-sign" />
+            <col className="print-fixed-hours" />
+          </colgroup>
           <tbody>
-            <tr><td colSpan={5}><strong>Nome Completo:</strong> {req?.employeeName || ''}</td></tr>
-            <tr className="print-gray"><td colSpan={5}><strong>Vale Transporte:</strong> {formatCurrency(valeTransporteValue)} (X)</td></tr>
+            <tr className="print-name-row"><td colSpan={5}>Nome Completo:&nbsp; {req?.employeeName || ''}</td></tr>
+            <tr className="print-gray print-vt-row"><td colSpan={5}>Vale Transporte: {formatCurrency(valeTransporteValue)} (X)</td></tr>
             <tr><th>Data</th><th>Entrada</th><th>Saida</th><th>Ass. Do Trabalhador</th><th>QTD H</th></tr>
             {rows.map((record, idx) => (
               <tr key={idx}>
@@ -2212,12 +2247,12 @@ function testeManual() {
                 <td>{record && getRecordHours(record, EmployeeType.FIXO) > 0 ? formatDecimalHours(getRecordHours(record, EmployeeType.FIXO)).replace('h ', ':').replace('m', '') : ''}</td>
               </tr>
             ))}
-            <tr className="print-total"><td colSpan={3}>Total horas: {req ? formatDecimalHours(req.totalTimeDecimal) : ''}</td><td></td><td></td></tr>
+            <tr className="print-total print-total-row"><td colSpan={3}>Total horas:</td><td></td><td>{req ? formatDecimalHours(req.totalTimeDecimal).replace('h ', ':').replace('m', '') : ''}</td></tr>
           </tbody>
         </table>
         <div className="print-value">
           <div>Valor Extra</div>
-          <div>{formatCurrency(sector?.fixedRate || 0)}</div>
+          <strong>{formatCurrency(sector?.fixedRate || 0)}</strong>
         </div>
       </div>
     );
@@ -2300,15 +2335,19 @@ function testeManual() {
     <div className="print-root" aria-hidden={printMode ? 'false' : 'true'}>
       {printMode === EmployeeType.FIXO && printableFixedPages.map((page, pageIdx) => (
         <section className="print-page" key={`${page.sector.id}-${page.part}`}>
-          <div className="print-sheet">
-            <div className="print-header">
-              <span>Setor: {page.sector.name}{page.part > 1 ? ` - Parte ${page.part}` : ''}</span>
-              <span>{page.pageRequests[0] ? getWeekRangeLabel(page.pageRequests[0].weekStarting) : ''}</span>
-              <span>{pageIdx + 1}</span>
+          <div className="print-fixed-sheet">
+            <div className="print-fixed-header">
+              <div className="print-fixed-label">Setor:</div>
+              <div>{page.sector.name}{page.part > 1 ? ` - Parte ${page.part}` : ''}</div>
+              <div>{page.pageRequests[0] ? formatFullDate(page.pageRequests[0].weekStarting) : ''}</div>
+              <div>até</div>
+              <div>{page.pageRequests[0] ? getWeekEndDate(page.pageRequests[0].weekStarting) : ''}</div>
+              <div></div>
             </div>
             <div className="print-fixed-grid">
               {Array.from({ length: 10 }, (_, idx) => renderFixedPrintCard(page.pageRequests[idx], page.sector))}
             </div>
+            <div style={{ textAlign: 'right', fontSize: 8, fontWeight: 700, padding: '0 2mm 1mm' }}>{pageIdx + 1}</div>
           </div>
         </section>
       ))}
