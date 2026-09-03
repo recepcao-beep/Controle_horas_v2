@@ -2191,6 +2191,8 @@ function testeManual() {
         .print-fixed-table { font-size: 8px; font-weight: 700; }
         .print-fixed-table th, .print-fixed-table td { height: 13px; padding: 2px; }
         .print-fixed-table .print-name-row td, .print-fixed-table .print-vt-row td { text-align: left; }
+        .print-fixed-table .print-vt-row td { background: #d9d9d9 !important; }
+        .print-fixed-table .print-date-cell { text-align: center; font-family: Calibri, Arial, sans-serif; font-size: 11px; }
         .print-fixed-table .print-total-row td { height: 15px; text-align: left; }
         .print-fixed-table col.print-fixed-date { width: 23%; }
         .print-fixed-table col.print-fixed-time { width: 17%; }
@@ -2236,11 +2238,11 @@ function testeManual() {
           </colgroup>
           <tbody>
             <tr className="print-name-row"><td colSpan={5}>Nome Completo:&nbsp; {req?.employeeName || ''}</td></tr>
-            <tr className="print-gray print-vt-row"><td colSpan={5}>Vale Transporte: {formatCurrency(valeTransporteValue)} (X)</td></tr>
+            <tr className="print-vt-row"><td colSpan={5}>Vale Transporte: {formatCurrency(10)} (X)</td></tr>
             <tr><th>Data</th><th>Entrada</th><th>Saida</th><th>Ass. Do Trabalhador</th><th>QTD H</th></tr>
             {rows.map((record, idx) => (
               <tr key={idx}>
-                <td>{record ? formatShortDate(record.date) : ''}</td>
+                <td className="print-date-cell">{record ? formatShortDate(record.date) : ''}</td>
                 <td>{record?.realEntry || ''}</td>
                 <td>{record?.realExit || ''}</td>
                 <td></td>
