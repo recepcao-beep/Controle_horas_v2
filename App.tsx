@@ -2156,24 +2156,23 @@ function testeManual() {
     <style>{`
       .print-root { display: none; }
       @media print {
-        @page { size: A4 portrait; margin: 8mm; }
+        @page { size: A4 portrait; margin: 6mm; }
         body { background: #fff !important; color: #000 !important; }
-        body * { visibility: hidden !important; }
-        .print-root, .print-root * { visibility: visible !important; }
-        .print-root { display: block !important; position: absolute; inset: 0; width: 100%; background: #fff; color: #000; font-family: Arial, sans-serif; }
-        .print-page { width: 194mm; min-height: 281mm; padding: 0; page-break-after: always; break-after: page; box-sizing: border-box; }
+        .app-shell > :not(.print-root):not(style) { display: none !important; }
+        .print-root { display: block !important; position: static !important; width: 100%; background: #fff; color: #000; font-family: Arial, sans-serif; }
+        .print-page { width: 100%; height: auto; min-height: 0; padding: 0; page-break-after: always; break-after: page; box-sizing: border-box; overflow: hidden; }
         .print-page:last-child { page-break-after: auto; break-after: auto; }
-        .print-sheet { border: 1px solid #000; width: 100%; height: 100%; box-sizing: border-box; }
+        .print-sheet { border: 1px solid #000; width: 100%; box-sizing: border-box; }
         .print-header { display: grid; grid-template-columns: 1fr auto auto; gap: 14px; align-items: center; border-bottom: 1px solid #000; padding: 4px 8px; font-size: 13px; font-weight: 700; }
-        .print-fixed-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7mm 9mm; padding: 7mm 8mm; }
+        .print-fixed-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4mm 7mm; padding: 5mm 6mm; }
         .print-fixed-card { display: grid; grid-template-columns: 1fr 18mm; gap: 2mm; align-items: start; break-inside: avoid; }
-        .print-fixed-table, .print-registered-table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 8px; }
-        .print-fixed-table th, .print-fixed-table td, .print-registered-table th, .print-registered-table td { border: 1px solid #000; padding: 2px; height: 13px; overflow: hidden; }
+        .print-fixed-table, .print-registered-table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 7.5px; }
+        .print-fixed-table th, .print-fixed-table td, .print-registered-table th, .print-registered-table td { border: 1px solid #000; padding: 1.5px; height: 11px; overflow: hidden; }
         .print-fixed-table th, .print-registered-table th { font-weight: 700; text-align: center; }
         .print-gray { background: #d9d9d9 !important; }
         .print-yellow { background: #ffff00 !important; }
         .print-total { font-weight: 700; }
-        .print-value { font-size: 12px; font-weight: 700; line-height: 1.2; padding-top: 24px; }
+        .print-value { font-size: 10px; font-weight: 700; line-height: 1.2; padding-top: 20px; }
         .print-registered-slot { border: 1px solid #000; margin-bottom: 7mm; break-inside: avoid; }
         .print-registered-title { display: grid; grid-template-columns: 1fr 40mm; border-bottom: 1px solid #000; text-align: center; font-size: 11px; font-weight: 700; }
         .print-registered-title > div { padding: 4px; }
@@ -2282,7 +2281,7 @@ function testeManual() {
   );
 
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 transition-colors duration-200">
+    <div className="app-shell min-h-screen bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 transition-colors duration-200">
       <PrintStyles />
       <PrintableExtras />
       <button 
