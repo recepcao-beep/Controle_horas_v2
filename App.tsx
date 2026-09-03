@@ -2173,11 +2173,22 @@ function testeManual() {
         .print-yellow { background: #ffff00 !important; }
         .print-total { font-weight: 700; }
         .print-value { font-size: 10px; font-weight: 700; line-height: 1.2; padding-top: 20px; }
-        .print-registered-slot { border: 1px solid #000; margin-bottom: 7mm; break-inside: avoid; }
-        .print-registered-title { display: grid; grid-template-columns: 1fr 40mm; border-bottom: 1px solid #000; text-align: center; font-size: 11px; font-weight: 700; }
+        .print-registered-page { padding: 10mm 8mm 0; }
+        .print-registered-slot { border: 1px solid #000; margin-bottom: 14mm; break-inside: avoid; }
+        .print-registered-slot:last-of-type { margin-bottom: 4mm; }
+        .print-registered-head { display: grid; grid-template-columns: 1fr 26mm 27mm 12mm 27mm; align-items: center; border-bottom: 1px solid #000; font-size: 7.5px; font-weight: 700; }
+        .print-registered-head > div { padding: 2px 4px; min-height: 12px; }
+        .print-registered-title { display: grid; grid-template-columns: 1fr 38mm; border-bottom: 1px solid #000; text-align: center; font-size: 12px; font-weight: 700; }
         .print-registered-title > div { padding: 4px; }
-        .print-registered-subtitle { border-bottom: 1px solid #000; text-align: center; font-size: 7px; font-weight: 700; padding: 2px; }
-        .print-signatures { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12mm; padding: 8px 12mm 12px; font-size: 8px; text-align: center; }
+        .print-registered-name { border-bottom: 1px solid #000; font-size: 7.5px; font-weight: 700; padding: 2px 4px; }
+        .print-registered-note { border-bottom: 1px solid #000; text-align: center; font-size: 7px; font-weight: 700; padding: 2px; }
+        .print-registered-legend { display: grid; grid-template-columns: 28mm 1fr; border-bottom: 1px solid #000; font-size: 7px; font-weight: 700; }
+        .print-registered-legend > div { padding: 2px 4px; }
+        .print-registered-table { font-size: 7px; }
+        .print-registered-table th, .print-registered-table td { height: 16px; padding: 2px; }
+        .print-registered-table .print-small-row th { height: 11px; padding: 1px; font-size: 6px; }
+        .print-registered-table .print-date-title { font-size: 16px; }
+        .print-signatures { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12mm; padding: 9px 12mm 13px; font-size: 7px; text-align: center; }
         .print-signatures span { display: block; border-top: 1px solid #000; padding-top: 3px; }
       }
     `}</style>
@@ -2216,20 +2227,51 @@ function testeManual() {
     const rows = Array.from({ length: 7 }, (_, idx) => req?.records[idx]);
     return (
       <div className="print-registered-slot">
-        <div className="print-header">
-          <span>SETOR: {req?.sectorName || ''}</span>
-          <span>DATA: {req ? getWeekRangeLabel(req.weekStarting) : ''}</span>
-          <span></span>
+        <div className="print-registered-head">
+          <div>SETOR:</div>
+          <div>{req?.sectorName || ''}</div>
+          <div>DATA:</div>
+          <div>{req ? formatShortDate(req.weekStarting) : ''}</div>
+          <div>ATE {req ? getWeekRangeLabel(req.weekStarting).split(' ate ')[1] : ''}</div>
         </div>
         <div className="print-registered-title">
           <div>HE REGISTRADO FECHAMENTO SEMANAL</div>
           <div className="print-yellow">Segunda Feira as<br />09:00h</div>
         </div>
-        <div className="print-registered-subtitle">NOME COMPLETO: {req?.employeeName || ''}</div>
+        <div className="print-registered-name">NOME COMPLETO: {req?.employeeName || ''}</div>
+        <div className="print-registered-note">Todas as Horas Anotadas serao conferidas com o Registro de Ponto ja registrado pelo colaborador ( coluna B E C )</div>
+        <div className="print-registered-legend">
+          <div>COLUNA B e C =</div>
+          <div style={{ textAlign: 'center' }}>Serao de Anotacoes do RH</div>
+        </div>
+        <div className="print-registered-legend">
+          <div>COLUNA A e D =</div>
+          <div style={{ textAlign: 'center' }}>Serao de anotacoes do lider ( semanalmente )</div>
+        </div>
         <table className="print-registered-table">
           <tbody>
-            <tr><th rowSpan={2}>DATA</th><th>A<br />REAL ENTRADA</th><th>B<br />ENTRADA REGISTRADA NO PONTO</th><th>TOTAL</th><th>C<br />SAIDA REGISTRADA NO PONTO</th><th>D<br />REAL SAIDA</th><th>TOTAL</th><th>HORAS EXTRAS TOTAIS</th></tr>
-            <tr><th colSpan={3} className="print-yellow">HORAS EXTRAS APOS A ENTRADA DO PONTO</th><th colSpan={3} className="print-yellow">HORAS EXTRAS APOS A SAIDA DO PONTO</th></tr>
+            <tr>
+              <th rowSpan={3} className="print-date-title">DATA</th>
+              <th>A</th>
+              <th>B</th>
+              <th></th>
+              <th>C</th>
+              <th>D</th>
+              <th></th>
+              <th rowSpan={3}>HORAS<br />EXTRAS<br />TOTAIS</th>
+            </tr>
+            <tr className="print-small-row">
+              <th colSpan={3} className="print-yellow">HORAS EXTRAS APOS A ENTRADA DO PONTO</th>
+              <th colSpan={3} className="print-yellow">HORAS EXTRAS APOS A SAIDA DO PONTO</th>
+            </tr>
+            <tr className="print-small-row">
+              <th>REAL ENTRADA</th>
+              <th>ENTRADA REGISTRADA NO PONTO</th>
+              <th>TOTAL</th>
+              <th>SAIDA REGISTRADA NO PONTO</th>
+              <th>REAL SAIDA</th>
+              <th>TOTAL</th>
+            </tr>
             {rows.map((record, idx) => (
               <tr key={idx}>
                 <td>{record ? formatShortDate(record.date) : ''}</td>
@@ -2242,7 +2284,7 @@ function testeManual() {
                 <td>{record && getRecordHours(record, EmployeeType.REGISTRADO) > 0 ? formatDecimalHours(getRecordHours(record, EmployeeType.REGISTRADO)) : ''}</td>
               </tr>
             ))}
-            <tr><td colSpan={8}>Obs:</td></tr>
+            <tr><td colSpan={8} style={{ height: 18 }}>Obs:</td></tr>
           </tbody>
         </table>
         <div className="print-signatures">
@@ -2272,7 +2314,7 @@ function testeManual() {
       ))}
 
       {printMode === EmployeeType.REGISTRADO && printableRegisteredPages.map((page, pageIdx) => (
-        <section className="print-page" key={`registrado-${pageIdx}`}>
+        <section className="print-page print-registered-page" key={`registrado-${pageIdx}`}>
           {Array.from({ length: 2 }, (_, idx) => renderRegisteredPrintSlot(page[idx]))}
           <div style={{ textAlign: 'right', fontSize: 8, fontWeight: 700 }}>{pageIdx + 1}</div>
         </section>
