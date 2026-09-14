@@ -326,7 +326,7 @@ export async function performClosing(sheets: any, spreadsheetId: string) {
   }
 
   // Backup Solicitacoes data
-  const solData = await sheets.spreadsheets.values.get({
+  const solData = await sourceSheets.spreadsheets.values.get({
     spreadsheetId,
     range: 'Solicitacoes!A:Z'
   });
@@ -368,13 +368,14 @@ export async function performClosing(sheets: any, spreadsheetId: string) {
 
 // Gera arquivos do modelo oficial do RH no Drive SEM limpar o banco de dados.
 export async function generateRhClosings(
-  sheets: any,
+  sourceSheets: any,
+  targetSheets: any,
   drive: any,
   sourceSpreadsheetId: string,
   templateSpreadsheetId: string,
   destinationFolderId: string
 ) {
-  const solData = await sheets.spreadsheets.values.get({
+  const solData = await sourceSheets.spreadsheets.values.get({
     spreadsheetId: sourceSpreadsheetId,
     range: 'Solicitacoes!A:Z'
   });
@@ -443,7 +444,7 @@ export async function generateRhClosings(
     const targetId = copied.data.id;
     if (!targetId) throw new Error(`Falha ao copiar o modelo para o setor ${g.sector}.`);
 
-    const info = await sheets.spreadsheets.get({ spreadsheetId: targetId });
+    const info = await targetSheets.spreadsheets.get({ spreadsheetId: targetId });
     const templateReg = info.data.sheets?.find((s: any) => s.properties?.title === 'HE - REGISTRADO');
     const templateFixo = info.data.sheets?.find((s: any) => s.properties?.title === 'HE - FIXO');
     if (!templateReg || !templateFixo) throw new Error("O MODELO RH precisa conter as abas 'HE - REGISTRADO' e 'HE - FIXO'.");
@@ -458,7 +459,7 @@ export async function generateRhClosings(
     const duplicateRequests: any[] = [];
     for (let i = 1; i < regChunks; i++) duplicateRequests.push({ duplicateSheet: { sourceSheetId: templateReg.properties.sheetId, newSheetName: `HE - REGISTRADO ${i + 1}` } });
     for (let i = 1; i < fixoChunks; i++) duplicateRequests.push({ duplicateSheet: { sourceSheetId: templateFixo.properties.sheetId, newSheetName: `HE - FIXO ${i + 1}` } });
-    if (duplicateRequests.length) await sheets.spreadsheets.batchUpdate({ spreadsheetId: targetId, requestBody: { requests: duplicateRequests } });
+    if (duplicateRequests.length) await targetSheets.spreadsheets.batchUpdate({ spreadsheetId: targetId, requestBody: { requests: duplicateRequests } });
     for (let i = 1; i < regChunks; i++) regSheets.push(`HE - REGISTRADO ${i + 1}`);
     for (let i = 1; i < fixoChunks; i++) fixoSheets.push(`HE - FIXO ${i + 1}`);
 
@@ -515,7 +516,7 @@ export async function generateRhClosings(
     fixoSheets.forEach(s => put(s, 'B1', g.sector));
 
     if (updates.length) {
-      await sheets.spreadsheets.values.batchUpdate({
+      await targetSheets.spreadsheets.values.batchUpdate({
         spreadsheetId: targetId,
         requestBody: { valueInputOption: 'USER_ENTERED', data: updates }
       });

@@ -31,6 +31,23 @@ const getGoogleAuth = () => {
   });
 };
 
+
+// OAuth da conta Google proprietária dos arquivos de fechamento do RH.
+// A conta de serviço continua sendo usada para ler/gravar o banco principal.
+const getClosingOAuth = () => {
+  const clientId = process.env.ID_DO_CLIENTE_DO_GOOGLE || process.env.GOOGLE_CLIENT_ID;
+  const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+  const refreshToken = process.env.GOOGLE_DRIVE_REFRESH_TOKEN;
+
+  if (!clientId || !clientSecret || !refreshToken) {
+    throw new Error('OAuth do fechamento não configurado. Verifique ID_DO_CLIENTE_DO_GOOGLE, GOOGLE_CLIENT_SECRET e GOOGLE_DRIVE_REFRESH_TOKEN na Vercel.');
+  }
+
+  const oauth2Client = new google.auth.OAuth2(clientId, clientSecret);
+  oauth2Client.setCredentials({ refresh_token: refreshToken });
+  return oauth2Client;
+};
+
 // Sheets API Proxy
 app.get('/api/config/status', (req, res) => {
   res.json({
@@ -275,10 +292,16 @@ app.post('/api/sheets/generate-closing', async (req, res) => {
     return res.status(500).json({ success: false, error: 'GOOGLE_RH_TEMPLATE_ID e GOOGLE_CLOSINGS_FOLDER_ID precisam estar configurados na Vercel.' });
   }
   try {
-    const auth = getGoogleAuth();
-    const sheets = google.sheets({ version: 'v4', auth });
-    const drive = google.drive({ version: 'v3', auth });
-    const files = await generateRhClosings(sheets, drive, spreadsheetId, templateSpreadsheetId, destinationFolderId);
+    // Banco principal: conta de serviço (mantém o funcionamento atual).
+    const serviceAuth = getGoogleAuth();
+    const sourceSheets = google.sheets({ version: 'v4', auth: serviceAuth });
+
+    // Arquivos de fechamento: OAuth da conta horasextras.villageinn@gmail.com.
+    const closingAuth = getClosingOAuth();
+    const targetSheets = google.sheets({ version: 'v4', auth: closingAuth });
+    const drive = google.drive({ version: 'v3', auth: closingAuth });
+
+    const files = await generateRhClosings(sourceSheets, targetSheets, drive, spreadsheetId, templateSpreadsheetId, destinationFolderId);
     res.json({ success: true, files });
   } catch (error: any) {
     console.error('Error generating RH closing:', error);
