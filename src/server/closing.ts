@@ -366,7 +366,9 @@ export async function performClosing(sheets: any, spreadsheetId: string) {
   await distributeData(sheets, spreadsheetId, []);
 }
 
-// Gera arquivos do modelo oficial do RH no Drive SEM limpar o banco de dados.
+// Gera PDFs do modelo oficial do RH no Drive SEM limpar o banco de dados.
+// Estrutura criada automaticamente:
+// FECHAMENTOS / HE-FIXO|HE-REGISTRADO / ANO / MÊS / DD-MM / SETOR-DD-MM.pdf
 export async function generateRhClosings(
   sourceSheets: any,
   targetSheets: any,
@@ -375,6 +377,8 @@ export async function generateRhClosings(
   templateSpreadsheetId: string,
   destinationFolderId: string
 ) {
+  const { Readable } = await import('stream');
+
   const solData = await sourceSheets.spreadsheets.values.get({
     spreadsheetId: sourceSpreadsheetId,
     range: 'Solicitacoes!A:Z'
@@ -395,13 +399,36 @@ export async function generateRhClosings(
   if (!rows.length) throw new Error('Não há solicitações APROVADAS para gerar o fechamento.');
 
   const clean = (v: any) => String(v || '').trim();
-  const weekKey = (r: any) => {
-    if (clean(r.weekStarting)) return clean(r.weekStarting).slice(0, 10);
-    const first = (r.records || []).find((x: any) => x?.date)?.date;
-    return first ? String(first).slice(0, 10) : 'SEM-DATA';
+
+  // O campo weekStarting do app legado nem sempre guarda a segunda-feira.
+  // Em alguns registros ele contém o DOMINGO de fechamento (ex.: 13/09),
+  // enquanto os lançamentos pertencem à semana 07/09 a 13/09. Se usarmos
+  // esse valor diretamente, o gerador procura as horas em 13/09..19/09 e
+  // deixa 07/09..12/09 em branco. Normalizamos sempre para a segunda-feira
+  // da semana e, quando houver registros, usamos a primeira data real como
+  // fonte de verdade.
+  const mondayOf = (iso: string) => {
+    const value = clean(iso).slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return 'SEM-DATA';
+    const [y, m, d] = value.split('-').map(Number);
+    const dt = new Date(Date.UTC(y, m - 1, d));
+    const day = dt.getUTCDay(); // 0=domingo, 1=segunda...
+    const diff = day === 0 ? -6 : 1 - day;
+    dt.setUTCDate(dt.getUTCDate() + diff);
+    return dt.toISOString().slice(0, 10);
   };
 
-  // Um arquivo por setor e por semana. Solicitações repetidas do mesmo colaborador são consolidadas.
+  const weekKey = (r: any) => {
+    const recordDates = (r.records || [])
+      .map((x: any) => clean(x?.date).slice(0, 10))
+      .filter((d: string) => /^\d{4}-\d{2}-\d{2}$/.test(d))
+      .sort();
+    if (recordDates.length) return mondayOf(recordDates[0]);
+    if (clean(r.weekStarting)) return mondayOf(clean(r.weekStarting));
+    return 'SEM-DATA';
+  };
+
+  // Consolida por SETOR + SEMANA, preservando a separação FIXO/REGISTRADO por colaborador.
   const groups = new Map<string, any>();
   for (const r of rows) {
     const sector = clean(r.sectorName) || 'GERAL';
@@ -421,108 +448,216 @@ export async function generateRhClosings(
     }
   }
 
-  const results: any[] = [];
-  const brDate = (iso: string) => {
-    if (!iso || iso === 'SEM-DATA') return iso;
-    const [y,m,d] = iso.split('-'); return `${d}-${m}-${y}`;
-  };
   const addDays = (iso: string, days: number) => {
     const [y,m,d] = iso.split('-').map(Number);
     const dt = new Date(Date.UTC(y, m - 1, d + days));
     return dt.toISOString().slice(0,10);
   };
   const safeName = (s: string) => s.replace(/[\\/:*?"<>|]/g, '-').replace(/\s+/g, ' ').trim();
+  const monthNames = ['JANEIRO','FEVEREIRO','MARÇO','ABRIL','MAIO','JUNHO','JULHO','AGOSTO','SETEMBRO','OUTUBRO','NOVEMBRO','DEZEMBRO'];
+  const dateFolder = (iso: string) => {
+    if (!iso || iso === 'SEM-DATA') return 'SEM-DATA';
+    const [,m,d] = iso.split('-');
+    return `${d}-${m}`;
+  };
+
+  const driveEscape = (v: string) => v.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+  const ensureFolder = async (parentId: string, name: string) => {
+    const found = await drive.files.list({
+      q: `'${driveEscape(parentId)}' in parents and mimeType='application/vnd.google-apps.folder' and name='${driveEscape(name)}' and trashed=false`,
+      fields: 'files(id,name)',
+      pageSize: 10
+    });
+    const existing = found.data.files?.[0];
+    if (existing?.id) return existing.id;
+    const created = await drive.files.create({
+      requestBody: { name, mimeType: 'application/vnd.google-apps.folder', parents: [parentId] },
+      fields: 'id'
+    });
+    if (!created.data.id) throw new Error(`Não foi possível criar a pasta ${name}.`);
+    return created.data.id;
+  };
+
+  const ensureClosingPath = async (type: 'HE-FIXO'|'HE-REGISTRADO', week: string) => {
+    const typeId = await ensureFolder(destinationFolderId, type);
+    if (week === 'SEM-DATA') {
+      const undatedId = await ensureFolder(typeId, 'SEM-DATA');
+      return { typeId, finalId: undatedId };
+    }
+    const [year, month] = week.split('-').map(Number);
+    const yearId = await ensureFolder(typeId, String(year));
+    const monthId = await ensureFolder(yearId, monthNames[month - 1]);
+    const finalId = await ensureFolder(monthId, dateFolder(week));
+    return { typeId, finalId };
+  };
+
+  const removeExistingPdf = async (folderId: string, name: string) => {
+    const found = await drive.files.list({
+      q: `'${driveEscape(folderId)}' in parents and name='${driveEscape(name)}' and mimeType='application/pdf' and trashed=false`,
+      fields: 'files(id)',
+      pageSize: 100
+    });
+    for (const f of found.data.files || []) {
+      if (f.id) await drive.files.update({ fileId: f.id, requestBody: { trashed: true } });
+    }
+  };
+
+  const exportTypePdf = async (
+    populatedSpreadsheetId: string,
+    type: 'HE-FIXO'|'HE-REGISTRADO',
+    sector: string,
+    week: string
+  ) => {
+    const { finalId } = await ensureClosingPath(type, week);
+    const baseName = safeName(`${sector.toUpperCase()}-${dateFolder(week)}`);
+    const pdfName = `${baseName}.pdf`;
+
+    // Cópia temporária: deixa visíveis apenas as folhas do tipo escolhido.
+    const temp = await drive.files.copy({
+      fileId: populatedSpreadsheetId,
+      requestBody: { name: `TEMP-${type}-${baseName}`, parents: [destinationFolderId] },
+      fields: 'id'
+    });
+    const tempId = temp.data.id;
+    if (!tempId) throw new Error(`Não foi possível preparar o PDF de ${type} / ${sector}.`);
+
+    try {
+      const info = await targetSheets.spreadsheets.get({ spreadsheetId: tempId });
+      const prefix = type === 'HE-FIXO' ? 'HE - FIXO' : 'HE - REGISTRADO';
+      const deleteRequests = (info.data.sheets || [])
+        .filter((s: any) => !String(s.properties?.title || '').startsWith(prefix))
+        .map((s: any) => ({ deleteSheet: { sheetId: s.properties.sheetId } }));
+      if (deleteRequests.length) {
+        await targetSheets.spreadsheets.batchUpdate({ spreadsheetId: tempId, requestBody: { requests: deleteRequests } });
+      }
+
+      const exported = await drive.files.export(
+        { fileId: tempId, mimeType: 'application/pdf' },
+        { responseType: 'arraybuffer' }
+      );
+      const pdfBuffer = Buffer.from(exported.data as ArrayBuffer);
+
+      await removeExistingPdf(finalId, pdfName);
+      const uploaded = await drive.files.create({
+        requestBody: { name: pdfName, mimeType: 'application/pdf', parents: [finalId] },
+        media: { mimeType: 'application/pdf', body: Readable.from(pdfBuffer) },
+        fields: 'id,name,webViewLink'
+      });
+      return {
+        id: uploaded.data.id,
+        name: uploaded.data.name || pdfName,
+        url: uploaded.data.webViewLink,
+        sector,
+        week,
+        type,
+        folderId: finalId
+      };
+    } finally {
+      await drive.files.update({ fileId: tempId, requestBody: { trashed: true } }).catch(() => {});
+    }
+  };
+
+  // Garante as duas pastas principais mesmo que um dos tipos não tenha lançamentos na semana.
+  await ensureFolder(destinationFolderId, 'HE-FIXO');
+  await ensureFolder(destinationFolderId, 'HE-REGISTRADO');
+
+  const results: any[] = [];
 
   for (const g of groups.values()) {
-    const endWeek = g.week === 'SEM-DATA' ? 'SEM-DATA' : addDays(g.week, 6);
-    const fileName = safeName(`FECHAMENTO - ${g.sector} - ${brDate(g.week)} a ${brDate(endWeek)}`);
+    const fileName = safeName(`TEMP-FECHAMENTO-${g.sector}-${dateFolder(g.week)}`);
     const copied = await drive.files.copy({
       fileId: templateSpreadsheetId,
       requestBody: { name: fileName, parents: [destinationFolderId] },
-      fields: 'id,name,webViewLink'
+      fields: 'id,name'
     });
     const targetId = copied.data.id;
     if (!targetId) throw new Error(`Falha ao copiar o modelo para o setor ${g.sector}.`);
 
-    const info = await targetSheets.spreadsheets.get({ spreadsheetId: targetId });
-    const templateReg = info.data.sheets?.find((s: any) => s.properties?.title === 'HE - REGISTRADO');
-    const templateFixo = info.data.sheets?.find((s: any) => s.properties?.title === 'HE - FIXO');
-    if (!templateReg || !templateFixo) throw new Error("O MODELO RH precisa conter as abas 'HE - REGISTRADO' e 'HE - FIXO'.");
+    try {
+      const info = await targetSheets.spreadsheets.get({ spreadsheetId: targetId });
+      const templateReg = info.data.sheets?.find((s: any) => s.properties?.title === 'HE - REGISTRADO');
+      const templateFixo = info.data.sheets?.find((s: any) => s.properties?.title === 'HE - FIXO');
+      if (!templateReg || !templateFixo) throw new Error("O MODELO RH precisa conter as abas 'HE - REGISTRADO' e 'HE - FIXO'.");
 
-    const regs = Array.from(g.employees.values()).filter((e: any) => e.employeeType === 'REGISTRADO');
-    const fixos = Array.from(g.employees.values()).filter((e: any) => e.employeeType === 'FIXO');
-    const regChunks = Math.max(1, Math.ceil(regs.length / 2));
-    const fixoChunks = Math.max(1, Math.ceil(fixos.length / 10));
+      const regs = Array.from(g.employees.values()).filter((e: any) => e.employeeType === 'REGISTRADO');
+      const fixos = Array.from(g.employees.values()).filter((e: any) => e.employeeType === 'FIXO');
+      const regChunks = Math.max(1, Math.ceil(regs.length / 2));
+      const fixoChunks = Math.max(1, Math.ceil(fixos.length / 10));
 
-    const regSheets = ['HE - REGISTRADO'];
-    const fixoSheets = ['HE - FIXO'];
-    const duplicateRequests: any[] = [];
-    for (let i = 1; i < regChunks; i++) duplicateRequests.push({ duplicateSheet: { sourceSheetId: templateReg.properties.sheetId, newSheetName: `HE - REGISTRADO ${i + 1}` } });
-    for (let i = 1; i < fixoChunks; i++) duplicateRequests.push({ duplicateSheet: { sourceSheetId: templateFixo.properties.sheetId, newSheetName: `HE - FIXO ${i + 1}` } });
-    if (duplicateRequests.length) await targetSheets.spreadsheets.batchUpdate({ spreadsheetId: targetId, requestBody: { requests: duplicateRequests } });
-    for (let i = 1; i < regChunks; i++) regSheets.push(`HE - REGISTRADO ${i + 1}`);
-    for (let i = 1; i < fixoChunks; i++) fixoSheets.push(`HE - FIXO ${i + 1}`);
+      const regSheets = ['HE - REGISTRADO'];
+      const fixoSheets = ['HE - FIXO'];
+      const duplicateRequests: any[] = [];
+      for (let i = 1; i < regChunks; i++) duplicateRequests.push({ duplicateSheet: { sourceSheetId: templateReg.properties.sheetId, newSheetName: `HE - REGISTRADO ${i + 1}` } });
+      for (let i = 1; i < fixoChunks; i++) duplicateRequests.push({ duplicateSheet: { sourceSheetId: templateFixo.properties.sheetId, newSheetName: `HE - FIXO ${i + 1}` } });
+      if (duplicateRequests.length) await targetSheets.spreadsheets.batchUpdate({ spreadsheetId: targetId, requestBody: { requests: duplicateRequests } });
+      for (let i = 1; i < regChunks; i++) regSheets.push(`HE - REGISTRADO ${i + 1}`);
+      for (let i = 1; i < fixoChunks; i++) fixoSheets.push(`HE - FIXO ${i + 1}`);
 
-    const updates: any[] = [];
-    const q = (name: string) => `'${name.replace(/'/g, "''")}'`;
-    const put = (sheet: string, cell: string, value: any) => updates.push({ range: `${q(sheet)}!${cell}`, values: [[value ?? '']] });
+      const updates: any[] = [];
+      const q = (name: string) => `'${name.replace(/'/g, "''")}'`;
+      const put = (sheet: string, cell: string, value: any) => updates.push({ range: `${q(sheet)}!${cell}`, values: [[value ?? '']] });
 
-    // REGISTRADO: 2 colaboradores por aba. Somente campos de entrada são alterados; fórmulas ficam intactas.
-    regs.forEach((emp: any, idx: number) => {
-      const sheet = regSheets[Math.floor(idx / 2)];
-      const slot = idx % 2;
-      const nameRow = slot === 0 ? 4 : 28;
-      const firstDataRow = slot === 0 ? 11 : 35;
-      put(sheet, 'B1', g.sector);
-      put(sheet, `B${nameRow}`, emp.employeeName);
-      const recMap = new Map(emp.records.map((r: any) => [String(r.date).slice(0,10), r]));
-      if (g.week !== 'SEM-DATA') {
-        for (let d = 0; d < 7; d++) {
-          const rec: any = recMap.get(addDays(g.week, d));
-          if (!rec) continue;
-          const row = firstDataRow + d;
-          put(sheet, `C${row}`, rec.realEntry || '');
-          put(sheet, `D${row}`, rec.punchEntry || '');
-          put(sheet, `G${row}`, rec.punchExit || '');
-          put(sheet, `H${row}`, rec.realExit || '');
+      // REGISTRADO: 2 colaboradores por folha; fórmulas do modelo permanecem intactas.
+      regs.forEach((emp: any, idx: number) => {
+        const sheet = regSheets[Math.floor(idx / 2)];
+        const slot = idx % 2;
+        const nameRow = slot === 0 ? 4 : 28;
+        const firstDataRow = slot === 0 ? 11 : 35;
+        put(sheet, 'B1', g.sector);
+        put(sheet, `B${nameRow}`, emp.employeeName);
+        const recMap = new Map(emp.records.map((r: any) => [String(r.date).slice(0,10), r]));
+        if (g.week !== 'SEM-DATA') {
+          for (let d = 0; d < 7; d++) {
+            const rec: any = recMap.get(addDays(g.week, d));
+            if (!rec) continue;
+            const row = firstDataRow + d;
+            put(sheet, `C${row}`, rec.realEntry || '');
+            put(sheet, `D${row}`, rec.punchEntry || '');
+            put(sheet, `G${row}`, rec.punchExit || '');
+            put(sheet, `H${row}`, rec.realExit || '');
+          }
         }
+      });
+      regSheets.forEach(s => put(s, 'B1', g.sector));
+
+      // FIXO: 10 colaboradores por folha (5 blocos x 2 colunas).
+      const fixedSlots = [
+        {name:'B4', row:7, date:'A', entry:'B', exit:'C'}, {name:'I4', row:7, date:'H', entry:'I', exit:'J'},
+        {name:'B16', row:19, date:'A', entry:'B', exit:'C'}, {name:'I16', row:19, date:'H', entry:'I', exit:'J'},
+        {name:'B28', row:31, date:'A', entry:'B', exit:'C'}, {name:'I28', row:31, date:'H', entry:'I', exit:'J'},
+        {name:'B40', row:43, date:'A', entry:'B', exit:'C'}, {name:'I40', row:43, date:'H', entry:'I', exit:'J'},
+        {name:'B52', row:55, date:'A', entry:'B', exit:'C'}, {name:'I52', row:55, date:'H', entry:'I', exit:'J'}
+      ];
+      fixos.forEach((emp: any, idx: number) => {
+        const sheet = fixoSheets[Math.floor(idx / 10)];
+        const slot = fixedSlots[idx % 10];
+        put(sheet, 'B1', g.sector);
+        put(sheet, slot.name, emp.employeeName);
+        const records = [...emp.records].filter((r: any) => r.realEntry || r.realExit).sort((a: any,b: any) => String(a.date).localeCompare(String(b.date))).slice(0,7);
+        records.forEach((rec: any, d: number) => {
+          const row = slot.row + d;
+          const [y,m,day] = String(rec.date).slice(0,10).split('-');
+          put(sheet, `${slot.date}${row}`, `${day}/${m}/${y}`);
+          put(sheet, `${slot.entry}${row}`, rec.realEntry || '');
+          put(sheet, `${slot.exit}${row}`, rec.realExit || '');
+        });
+      });
+      fixoSheets.forEach(s => put(s, 'B1', g.sector));
+
+      if (updates.length) {
+        await targetSheets.spreadsheets.values.batchUpdate({
+          spreadsheetId: targetId,
+          requestBody: { valueInputOption: 'USER_ENTERED', data: updates }
+        });
       }
-    });
-    // Garante setor mesmo quando não houver registrado.
-    regSheets.forEach(s => put(s, 'B1', g.sector));
 
-    // FIXO: 10 colaboradores por aba (5 blocos x 2 colunas).
-    const fixedSlots = [
-      {name:'B4', row:7, date:'A', entry:'B', exit:'C'}, {name:'I4', row:7, date:'H', entry:'I', exit:'J'},
-      {name:'B16', row:19, date:'A', entry:'B', exit:'C'}, {name:'I16', row:19, date:'H', entry:'I', exit:'J'},
-      {name:'B28', row:31, date:'A', entry:'B', exit:'C'}, {name:'I28', row:31, date:'H', entry:'I', exit:'J'},
-      {name:'B40', row:43, date:'A', entry:'B', exit:'C'}, {name:'I40', row:43, date:'H', entry:'I', exit:'J'},
-      {name:'B52', row:55, date:'A', entry:'B', exit:'C'}, {name:'I52', row:55, date:'H', entry:'I', exit:'J'}
-    ];
-    fixos.forEach((emp: any, idx: number) => {
-      const sheet = fixoSheets[Math.floor(idx / 10)];
-      const slot = fixedSlots[idx % 10];
-      put(sheet, 'B1', g.sector);
-      put(sheet, slot.name, emp.employeeName);
-      const records = [...emp.records].filter((r: any) => r.realEntry || r.realExit).sort((a: any,b: any) => String(a.date).localeCompare(String(b.date))).slice(0,7);
-      records.forEach((rec: any, d: number) => {
-        const row = slot.row + d;
-        const [y,m,day] = String(rec.date).slice(0,10).split('-');
-        put(sheet, `${slot.date}${row}`, `${day}/${m}/${y}`);
-        put(sheet, `${slot.entry}${row}`, rec.realEntry || '');
-        put(sheet, `${slot.exit}${row}`, rec.realExit || '');
-      });
-    });
-    fixoSheets.forEach(s => put(s, 'B1', g.sector));
-
-    if (updates.length) {
-      await targetSheets.spreadsheets.values.batchUpdate({
-        spreadsheetId: targetId,
-        requestBody: { valueInputOption: 'USER_ENTERED', data: updates }
-      });
+      // Cada setor vira UM PDF por tipo, reunindo todas as folhas daquele tipo.
+      if (fixos.length) results.push(await exportTypePdf(targetId, 'HE-FIXO', g.sector, g.week));
+      if (regs.length) results.push(await exportTypePdf(targetId, 'HE-REGISTRADO', g.sector, g.week));
+    } finally {
+      // A planilha é apenas intermediária. O usuário final vê somente os PDFs.
+      await drive.files.update({ fileId: targetId, requestBody: { trashed: true } }).catch(() => {});
     }
-
-    results.push({ id: targetId, name: copied.data.name || fileName, url: copied.data.webViewLink || `https://docs.google.com/spreadsheets/d/${targetId}/edit`, sector: g.sector, week: g.week });
   }
 
   return results;

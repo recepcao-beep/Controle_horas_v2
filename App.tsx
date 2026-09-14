@@ -597,6 +597,26 @@ const App: React.FC = () => {
     }
   };
 
+  const openClosingRoot = async (type: 'HE-FIXO' | 'HE-REGISTRADO', label: string) => {
+    setIsLoadingFiles(true);
+    try {
+      const response = await fetch(`/api/drive/closing-root?type=${encodeURIComponent(type)}`);
+      const result = await response.json();
+      if (!result.success) {
+        setAlertMessage(result.error || `A pasta ${label} ainda não existe. Gere um fechamento primeiro.`);
+        return;
+      }
+      setFolderCache({});
+      setFolderHistory([]);
+      await fetchDriveFiles(result.data.id, label);
+    } catch (error) {
+      console.error('Erro ao abrir pasta de fechamento:', error);
+      setAlertMessage('Falha ao localizar a pasta de fechamento no Drive.');
+    } finally {
+      setIsLoadingFiles(false);
+    }
+  };
+
   const printFile = (fileId: string) => {
     // Abre o arquivo em uma nova aba para visualização/impressão.
     // Evita o uso de iframe oculto que causa erros de cross-origin (CORS) 
@@ -2721,8 +2741,8 @@ function testeManual() {
                 <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
                   <h2 className="text-2xl font-bold dark:text-white flex items-center gap-2"><Folder className="text-blue-600 dark:text-blue-400" /> Arquivos Salvos</h2>
                   <div className="flex flex-wrap gap-2 w-full md:w-auto">
-                    <button onClick={() => fetchDriveFiles(folderRegId, 'HE Registrado')} className="flex-1 md:flex-none bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 px-4 py-2 rounded-lg font-bold hover:bg-blue-100 dark:hover:bg-blue-900/50 transition">Ver HE Registrado</button>
-                    <button onClick={() => fetchDriveFiles(folderFixoId, 'HE Fixo')} className="flex-1 md:flex-none bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 px-4 py-2 rounded-lg font-bold hover:bg-blue-100 dark:hover:bg-blue-900/50 transition">Ver HE Fixo</button>
+                    <button onClick={() => openClosingRoot('HE-REGISTRADO', 'HE Registrado')} className="flex-1 md:flex-none bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 px-4 py-2 rounded-lg font-bold hover:bg-blue-100 dark:hover:bg-blue-900/50 transition">Ver HE Registrado</button>
+                    <button onClick={() => openClosingRoot('HE-FIXO', 'HE Fixo')} className="flex-1 md:flex-none bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 px-4 py-2 rounded-lg font-bold hover:bg-blue-100 dark:hover:bg-blue-900/50 transition">Ver HE Fixo</button>
                     <div className="flex bg-gray-100 dark:bg-gray-800 rounded-lg p-1 ml-auto md:ml-2">
                       <button onClick={() => setFileViewMode('list')} className={`p-1.5 rounded-md transition ${fileViewMode === 'list' ? 'bg-white dark:bg-gray-700 text-blue-600 dark:text-blue-400 shadow-sm' : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'}`} title="Lista"><List className="w-5 h-5" /></button>
                       <button onClick={() => setFileViewMode('grid')} className={`p-1.5 rounded-md transition ${fileViewMode === 'grid' ? 'bg-white dark:bg-gray-700 text-blue-600 dark:text-blue-400 shadow-sm' : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'}`} title="Grade"><Grid className="w-5 h-5" /></button>
@@ -2831,7 +2851,7 @@ function testeManual() {
                   <div className="text-center p-12 border-2 border-dashed border-gray-200 dark:border-gray-700 rounded-3xl">
                     <Folder className="w-12 h-12 text-gray-400 mx-auto mb-4" />
                     <h3 className="text-lg font-bold text-gray-800 dark:text-gray-200 mb-2">Nenhuma pasta selecionada</h3>
-                    <p className="text-gray-500 dark:text-gray-400">Selecione uma das pastas acima para visualizar os arquivos.</p>
+                    <p className="text-gray-500 dark:text-gray-400">Selecione HE Registrado ou HE Fixo para navegar por ano, mês e fechamento.</p>
                   </div>
                 )}
               </div>

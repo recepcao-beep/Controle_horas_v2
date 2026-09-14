@@ -48,6 +48,13 @@ const getClosingOAuth = () => {
   return oauth2Client;
 };
 
+// Arquivos de fechamento pertencem à conta OAuth. Se o token não estiver configurado,
+// mantém fallback para a conta de serviço para compatibilidade com instalações antigas.
+const getDriveAuthForFiles = () => {
+  if (process.env.GOOGLE_DRIVE_REFRESH_TOKEN) return getClosingOAuth();
+  return getGoogleAuth();
+};
+
 // Sheets API Proxy
 app.get('/api/config/status', (req, res) => {
   res.json({
@@ -366,6 +373,32 @@ app.post('/api/sheets/action', async (req, res) => {
   }
 });
 
+app.get('/api/drive/closing-root', async (req, res) => {
+  const type = String(req.query.type || '').toUpperCase();
+  if (!['HE-FIXO', 'HE-REGISTRADO'].includes(type)) {
+    return res.status(400).json({ success: false, error: 'Tipo inválido.' });
+  }
+  const rootId = process.env.GOOGLE_CLOSINGS_FOLDER_ID;
+  if (!rootId) return res.status(500).json({ success: false, error: 'GOOGLE_CLOSINGS_FOLDER_ID não configurado.' });
+
+  try {
+    const auth = getClosingOAuth();
+    const drive = google.drive({ version: 'v3', auth });
+    const escaped = type.replace(/'/g, "\\'");
+    const found = await drive.files.list({
+      q: `'${rootId}' in parents and mimeType='application/vnd.google-apps.folder' and name='${escaped}' and trashed=false`,
+      fields: 'files(id,name)',
+      pageSize: 10
+    });
+    const folder = found.data.files?.[0];
+    if (!folder?.id) return res.status(404).json({ success: false, error: `A pasta ${type} ainda não existe. Gere um fechamento primeiro.` });
+    res.json({ success: true, data: { id: folder.id, name: folder.name || type } });
+  } catch (error: any) {
+    console.error('Error locating closing root:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 app.get('/api/drive/files', async (req, res) => {
   const folderId = req.query.folderId as string;
   if (!folderId) return res.status(400).json({ error: 'Folder ID is required' });
@@ -375,7 +408,7 @@ app.get('/api/drive/files', async (req, res) => {
   }
 
   try {
-    const auth = getGoogleAuth();
+    const auth = getDriveAuthForFiles();
     const drive = google.drive({ version: 'v3', auth });
 
     const response = await drive.files.list({
@@ -409,7 +442,7 @@ app.get('/api/drive/download/:fileId', async (req, res) => {
   if (!fileId) return res.status(400).json({ error: 'File ID is required' });
 
   try {
-    const auth = getGoogleAuth();
+    const auth: any = getDriveAuthForFiles();
     const drive = google.drive({ version: 'v3', auth });
 
     // First check if it's a Google Workspace document or a binary file
@@ -422,9 +455,10 @@ app.get('/api/drive/download/:fileId', async (req, res) => {
     if (mimeType === 'application/vnd.google-apps.spreadsheet') {
       res.setHeader('Content-Type', 'application/pdf');
       
-      const client = await auth.getClient();
-      const tokenResponse = await client.getAccessToken();
-      const token = tokenResponse.token;
+      const tokenResponse = typeof auth.getClient === 'function'
+        ? await (await auth.getClient()).getAccessToken()
+        : await auth.getAccessToken();
+      const token = tokenResponse.token || tokenResponse;
       
       // Parâmetros para ajustar o recorte da folha:
       // fitw=true (ajustar à largura), size=A4, portrait=true (retrato), margins
