@@ -365,3 +365,164 @@ export async function performClosing(sheets: any, spreadsheetId: string) {
   // Clear REGISTRADO and FIXO using the distributeData logic with empty requests
   await distributeData(sheets, spreadsheetId, []);
 }
+
+// Gera arquivos do modelo oficial do RH no Drive SEM limpar o banco de dados.
+export async function generateRhClosings(
+  sheets: any,
+  drive: any,
+  sourceSpreadsheetId: string,
+  templateSpreadsheetId: string,
+  destinationFolderId: string
+) {
+  const solData = await sheets.spreadsheets.values.get({
+    spreadsheetId: sourceSpreadsheetId,
+    range: 'Solicitacoes!A:Z'
+  });
+
+  const values = solData.data.values || [];
+  if (values.length <= 1) throw new Error('Não há solicitações para gerar o fechamento.');
+
+  const headers = values[0].map((h: any) => String(h || '').trim());
+  const rows = values.slice(1).map((row: any[]) => {
+    const obj: any = {};
+    headers.forEach((h: string, i: number) => obj[h] = row[i]);
+    try { if (typeof obj.records === 'string') obj.records = JSON.parse(obj.records); } catch { obj.records = []; }
+    if (!Array.isArray(obj.records)) obj.records = [];
+    return obj;
+  }).filter((r: any) => String(r.status || '').trim().toUpperCase() === 'APROVADO');
+
+  if (!rows.length) throw new Error('Não há solicitações APROVADAS para gerar o fechamento.');
+
+  const clean = (v: any) => String(v || '').trim();
+  const weekKey = (r: any) => {
+    if (clean(r.weekStarting)) return clean(r.weekStarting).slice(0, 10);
+    const first = (r.records || []).find((x: any) => x?.date)?.date;
+    return first ? String(first).slice(0, 10) : 'SEM-DATA';
+  };
+
+  // Um arquivo por setor e por semana. Solicitações repetidas do mesmo colaborador são consolidadas.
+  const groups = new Map<string, any>();
+  for (const r of rows) {
+    const sector = clean(r.sectorName) || 'GERAL';
+    const week = weekKey(r);
+    const key = `${sector.toUpperCase()}|${week}`;
+    if (!groups.has(key)) groups.set(key, { sector, week, employees: new Map<string, any>() });
+    const g = groups.get(key);
+    const empKey = `${clean(r.employeeName).toUpperCase()}|${clean(r.employeeType).toUpperCase()}`;
+    if (!g.employees.has(empKey)) g.employees.set(empKey, {
+      employeeName: clean(r.employeeName), employeeType: clean(r.employeeType).toUpperCase(), records: []
+    });
+    const emp = g.employees.get(empKey);
+    for (const rec of r.records) {
+      if (!rec?.date) continue;
+      const idx = emp.records.findIndex((x: any) => x.date === rec.date);
+      if (idx >= 0) emp.records[idx] = rec; else emp.records.push(rec);
+    }
+  }
+
+  const results: any[] = [];
+  const brDate = (iso: string) => {
+    if (!iso || iso === 'SEM-DATA') return iso;
+    const [y,m,d] = iso.split('-'); return `${d}-${m}-${y}`;
+  };
+  const addDays = (iso: string, days: number) => {
+    const [y,m,d] = iso.split('-').map(Number);
+    const dt = new Date(Date.UTC(y, m - 1, d + days));
+    return dt.toISOString().slice(0,10);
+  };
+  const safeName = (s: string) => s.replace(/[\\/:*?"<>|]/g, '-').replace(/\s+/g, ' ').trim();
+
+  for (const g of groups.values()) {
+    const endWeek = g.week === 'SEM-DATA' ? 'SEM-DATA' : addDays(g.week, 6);
+    const fileName = safeName(`FECHAMENTO - ${g.sector} - ${brDate(g.week)} a ${brDate(endWeek)}`);
+    const copied = await drive.files.copy({
+      fileId: templateSpreadsheetId,
+      requestBody: { name: fileName, parents: [destinationFolderId] },
+      fields: 'id,name,webViewLink'
+    });
+    const targetId = copied.data.id;
+    if (!targetId) throw new Error(`Falha ao copiar o modelo para o setor ${g.sector}.`);
+
+    const info = await sheets.spreadsheets.get({ spreadsheetId: targetId });
+    const templateReg = info.data.sheets?.find((s: any) => s.properties?.title === 'HE - REGISTRADO');
+    const templateFixo = info.data.sheets?.find((s: any) => s.properties?.title === 'HE - FIXO');
+    if (!templateReg || !templateFixo) throw new Error("O MODELO RH precisa conter as abas 'HE - REGISTRADO' e 'HE - FIXO'.");
+
+    const regs = Array.from(g.employees.values()).filter((e: any) => e.employeeType === 'REGISTRADO');
+    const fixos = Array.from(g.employees.values()).filter((e: any) => e.employeeType === 'FIXO');
+    const regChunks = Math.max(1, Math.ceil(regs.length / 2));
+    const fixoChunks = Math.max(1, Math.ceil(fixos.length / 10));
+
+    const regSheets = ['HE - REGISTRADO'];
+    const fixoSheets = ['HE - FIXO'];
+    const duplicateRequests: any[] = [];
+    for (let i = 1; i < regChunks; i++) duplicateRequests.push({ duplicateSheet: { sourceSheetId: templateReg.properties.sheetId, newSheetName: `HE - REGISTRADO ${i + 1}` } });
+    for (let i = 1; i < fixoChunks; i++) duplicateRequests.push({ duplicateSheet: { sourceSheetId: templateFixo.properties.sheetId, newSheetName: `HE - FIXO ${i + 1}` } });
+    if (duplicateRequests.length) await sheets.spreadsheets.batchUpdate({ spreadsheetId: targetId, requestBody: { requests: duplicateRequests } });
+    for (let i = 1; i < regChunks; i++) regSheets.push(`HE - REGISTRADO ${i + 1}`);
+    for (let i = 1; i < fixoChunks; i++) fixoSheets.push(`HE - FIXO ${i + 1}`);
+
+    const updates: any[] = [];
+    const q = (name: string) => `'${name.replace(/'/g, "''")}'`;
+    const put = (sheet: string, cell: string, value: any) => updates.push({ range: `${q(sheet)}!${cell}`, values: [[value ?? '']] });
+
+    // REGISTRADO: 2 colaboradores por aba. Somente campos de entrada são alterados; fórmulas ficam intactas.
+    regs.forEach((emp: any, idx: number) => {
+      const sheet = regSheets[Math.floor(idx / 2)];
+      const slot = idx % 2;
+      const nameRow = slot === 0 ? 4 : 28;
+      const firstDataRow = slot === 0 ? 11 : 35;
+      put(sheet, 'B1', g.sector);
+      put(sheet, `B${nameRow}`, emp.employeeName);
+      const recMap = new Map(emp.records.map((r: any) => [String(r.date).slice(0,10), r]));
+      if (g.week !== 'SEM-DATA') {
+        for (let d = 0; d < 7; d++) {
+          const rec: any = recMap.get(addDays(g.week, d));
+          if (!rec) continue;
+          const row = firstDataRow + d;
+          put(sheet, `C${row}`, rec.realEntry || '');
+          put(sheet, `D${row}`, rec.punchEntry || '');
+          put(sheet, `G${row}`, rec.punchExit || '');
+          put(sheet, `H${row}`, rec.realExit || '');
+        }
+      }
+    });
+    // Garante setor mesmo quando não houver registrado.
+    regSheets.forEach(s => put(s, 'B1', g.sector));
+
+    // FIXO: 10 colaboradores por aba (5 blocos x 2 colunas).
+    const fixedSlots = [
+      {name:'B4', row:7, date:'A', entry:'B', exit:'C'}, {name:'I4', row:7, date:'H', entry:'I', exit:'J'},
+      {name:'B16', row:19, date:'A', entry:'B', exit:'C'}, {name:'I16', row:19, date:'H', entry:'I', exit:'J'},
+      {name:'B28', row:31, date:'A', entry:'B', exit:'C'}, {name:'I28', row:31, date:'H', entry:'I', exit:'J'},
+      {name:'B40', row:43, date:'A', entry:'B', exit:'C'}, {name:'I40', row:43, date:'H', entry:'I', exit:'J'},
+      {name:'B52', row:55, date:'A', entry:'B', exit:'C'}, {name:'I52', row:55, date:'H', entry:'I', exit:'J'}
+    ];
+    fixos.forEach((emp: any, idx: number) => {
+      const sheet = fixoSheets[Math.floor(idx / 10)];
+      const slot = fixedSlots[idx % 10];
+      put(sheet, 'B1', g.sector);
+      put(sheet, slot.name, emp.employeeName);
+      const records = [...emp.records].filter((r: any) => r.realEntry || r.realExit).sort((a: any,b: any) => String(a.date).localeCompare(String(b.date))).slice(0,7);
+      records.forEach((rec: any, d: number) => {
+        const row = slot.row + d;
+        const [y,m,day] = String(rec.date).slice(0,10).split('-');
+        put(sheet, `${slot.date}${row}`, `${day}/${m}/${y}`);
+        put(sheet, `${slot.entry}${row}`, rec.realEntry || '');
+        put(sheet, `${slot.exit}${row}`, rec.realExit || '');
+      });
+    });
+    fixoSheets.forEach(s => put(s, 'B1', g.sector));
+
+    if (updates.length) {
+      await sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId: targetId,
+        requestBody: { valueInputOption: 'USER_ENTERED', data: updates }
+      });
+    }
+
+    results.push({ id: targetId, name: copied.data.name || fileName, url: copied.data.webViewLink || `https://docs.google.com/spreadsheets/d/${targetId}/edit`, sector: g.sector, week: g.week });
+  }
+
+  return results;
+}

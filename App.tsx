@@ -497,28 +497,53 @@ const App: React.FC = () => {
 
   const executarFechamentoSemanal = async () => {
     setConfirmDialog({
-      message: 'CONFIRMAÇÃO DE FECHAMENTO\n\nIsso irá duplicar as FOLHAS (REGISTRADO e FIXO) como backup, salvar as solicitações na aba BACKUP e LIMPAR a aba de Solicitações e as Fichas. Deseja continuar?',
+      message: 'GERAR FECHAMENTO DO RH\n\nSerão criados arquivos por setor na pasta de fechamentos. Nenhum lançamento será apagado ou alterado. Deseja continuar?',
+      onConfirm: async () => {
+        setIsSyncing(true);
+        try {
+          const response = await fetch('/api/sheets/generate-closing', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ spreadsheetId: extractSpreadsheetId(dbUrl) }),
+          });
+          const result = await response.json();
+          if (result.success) {
+            const qtd = result.files?.length || 0;
+            setAlertMessage(`Fechamento gerado com sucesso! ${qtd} arquivo(s) criado(s). Nenhum dado foi apagado.`);
+          } else {
+            setAlertMessage('Erro ao gerar fechamento: ' + (result.error || 'Verifique as permissões do Drive.'));
+          }
+        } catch (error) {
+          console.error('Erro ao gerar fechamento:', error);
+          setAlertMessage('Falha na comunicação com o servidor.');
+        } finally {
+          setIsSyncing(false);
+        }
+      }
+    });
+  };
+
+  const executarLimpezaDados = async () => {
+    setConfirmDialog({
+      message: 'ATENÇÃO - LIMPEZA DE DADOS\n\nEsta ação fará backup e apagará os lançamentos atuais para iniciar uma nova semana. Gere e confira o fechamento antes. Deseja realmente continuar?',
       onConfirm: async () => {
         setIsSyncing(true);
         try {
           const response = await fetch('/api/sheets/close', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              spreadsheetId: extractSpreadsheetId(dbUrl)
-            }),
+            body: JSON.stringify({ spreadsheetId: extractSpreadsheetId(dbUrl) }),
           });
-          
           const result = await response.json();
           if (result.success) {
-            setAlertMessage("Fechamento concluído com sucesso!");
-            loadDatabase(); // Reload data to clear requests locally
+            setAlertMessage('Limpeza concluída. O backup foi preservado e o sistema está pronto para a próxima semana.');
+            loadDatabase();
           } else {
-            setAlertMessage("Erro no fechamento: " + (result.error || "Verifique se a Conta de Serviço tem permissão de acesso."));
+            setAlertMessage('Erro na limpeza: ' + (result.error || 'Verifique as permissões da planilha.'));
           }
         } catch (error) {
-          console.error("Erro ao executar fechamento:", error);
-          setAlertMessage("Falha na comunicação com o servidor.");
+          console.error('Erro ao limpar dados:', error);
+          setAlertMessage('Falha na comunicação com o servidor.');
         } finally {
           setIsSyncing(false);
         }
@@ -2656,10 +2681,16 @@ function testeManual() {
                     <button onClick={exportToPDF} className="flex-1 bg-blue-600 text-white px-8 py-4 rounded-xl font-bold shadow-lg active:scale-95 transition">Exportar Drive</button>
                   </div>
                   <div className="mt-4">
-                    <button onClick={executarFechamentoSemanal} className="w-full bg-red-600 hover:bg-red-700 text-white px-8 py-4 rounded-xl font-bold shadow-lg active:scale-95 transition flex items-center justify-center gap-2">
-                      <AlertCircle className="w-5 h-5" />
-                      FECHAMENTO SEMANAL (Salvar + Limpar Tudo)
-                    </button>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      <button onClick={executarFechamentoSemanal} className="w-full bg-green-600 hover:bg-green-700 text-white px-8 py-4 rounded-xl font-bold shadow-lg active:scale-95 transition flex items-center justify-center gap-2">
+                        <FileText className="w-5 h-5" />
+                        GERAR FECHAMENTO RH
+                      </button>
+                      <button onClick={executarLimpezaDados} className="w-full bg-red-600 hover:bg-red-700 text-white px-8 py-4 rounded-xl font-bold shadow-lg active:scale-95 transition flex items-center justify-center gap-2">
+                        <AlertCircle className="w-5 h-5" />
+                        LIMPEZA DE DADOS
+                      </button>
+                    </div>
                   </div>
                 </div>
 

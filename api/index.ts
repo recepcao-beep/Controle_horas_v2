@@ -4,7 +4,7 @@ import { google } from 'googleapis';
 import cookieParser from 'cookie-parser';
 import session from 'express-session';
 import dotenv from 'dotenv';
-import { distributeData, performClosing } from '../src/server/closing.js';
+import { distributeData, performClosing, generateRhClosings } from '../src/server/closing.js';
 
 dotenv.config();
 
@@ -195,6 +195,26 @@ app.post('/api/sheets/sync', async (req, res) => {
       });
     }
     
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post('/api/sheets/generate-closing', async (req, res) => {
+  const { spreadsheetId } = req.body;
+  if (!spreadsheetId) return res.status(400).json({ success: false, error: 'Spreadsheet ID is required' });
+  const templateSpreadsheetId = process.env.GOOGLE_RH_TEMPLATE_ID;
+  const destinationFolderId = process.env.GOOGLE_CLOSINGS_FOLDER_ID;
+  if (!templateSpreadsheetId || !destinationFolderId) {
+    return res.status(500).json({ success: false, error: 'GOOGLE_RH_TEMPLATE_ID e GOOGLE_CLOSINGS_FOLDER_ID precisam estar configurados na Vercel.' });
+  }
+  try {
+    const auth = getGoogleAuth();
+    const sheets = google.sheets({ version: 'v4', auth });
+    const drive = google.drive({ version: 'v3', auth });
+    const files = await generateRhClosings(sheets, drive, spreadsheetId, templateSpreadsheetId, destinationFolderId);
+    res.json({ success: true, files });
+  } catch (error: any) {
+    console.error('Error generating RH closing:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
