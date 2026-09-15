@@ -326,7 +326,7 @@ export async function performClosing(sheets: any, spreadsheetId: string) {
   }
 
   // Backup Solicitacoes data
-  const solData = await sourceSheets.spreadsheets.values.get({
+  const solData = await sheets.spreadsheets.values.get({
     spreadsheetId,
     range: 'Solicitacoes!A:Z'
   });
