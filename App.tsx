@@ -146,6 +146,8 @@ const App: React.FC = () => {
     parityRef: 'EVEN' as 'EVEN' | 'ODD'
   });
   const [employeeSectorFilter, setEmployeeSectorFilter] = useState<string>('ALL');
+  const [requestTypeFilter, setRequestTypeFilter] = useState<string>('ALL');
+  const [requestSectorFilter, setRequestSectorFilter] = useState<string>('ALL');
   // Estado para controlar qual funcionário está sendo editado
   const [editingEmployeeId, setEditingEmployeeId] = useState<string | null>(null);
   
@@ -1189,11 +1191,31 @@ const App: React.FC = () => {
     );
   };
 
+  const filteredAdminRequests = useMemo(() => requests.filter(req => {
+    const matchesType = requestTypeFilter === 'ALL' || req.employeeType === requestTypeFilter;
+    const matchesSector = requestSectorFilter === 'ALL' || String(req.sectorId) === String(requestSectorFilter);
+    return matchesType && matchesSector;
+  }), [requests, requestTypeFilter, requestSectorFilter]);
+
   const renderAdminRequestsSubView = () => (
     <div className="h-full flex flex-col gap-6">
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center bg-white dark:bg-gray-800 p-6 rounded-3xl shadow-sm border border-gray-100 dark:border-gray-700 gap-4">
         <h2 className="text-xl md:text-2xl font-black text-gray-800 dark:text-gray-200">Fluxo de Solicitações</h2>
-        <div className="w-full md:w-auto flex flex-col sm:flex-row gap-2">
+        <div className="w-full md:w-auto flex flex-col sm:flex-row gap-2 flex-wrap">
+          <select value={requestTypeFilter} onChange={e => setRequestTypeFilter(e.target.value)} className="w-full sm:w-auto bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-200 px-4 py-3 rounded-xl text-sm font-bold outline-none">
+            <option value="ALL">Todos os tipos</option>
+            <option value={EmployeeType.FIXO}>HE-FIXO</option>
+            <option value={EmployeeType.REGISTRADO}>HE-REGISTRADO</option>
+          </select>
+          <select value={requestSectorFilter} onChange={e => setRequestSectorFilter(e.target.value)} className="w-full sm:w-auto bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-200 px-4 py-3 rounded-xl text-sm font-bold outline-none">
+            <option value="ALL">Todos os setores</option>
+            {[...sectors].sort((a, b) => a.name.localeCompare(b.name, 'pt-BR')).map(sector => (
+              <option key={sector.id} value={sector.id}>{sector.name}</option>
+            ))}
+          </select>
+          {(requestTypeFilter !== 'ALL' || requestSectorFilter !== 'ALL') && (
+            <button onClick={() => { setRequestTypeFilter('ALL'); setRequestSectorFilter('ALL'); }} className="w-full sm:w-auto px-4 py-3 rounded-xl text-sm font-bold bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-600">Limpar filtros</button>
+          )}
           <button onClick={() => syncDatabase({ sectors, employees, requests })} className="w-full sm:w-auto flex items-center justify-center gap-2 bg-blue-600 text-white px-4 py-3 rounded-xl text-sm font-bold shadow-lg shadow-blue-100 dark:shadow-none hover:bg-blue-700 active:scale-95 transition-transform"><RefreshCw className="w-4 h-4" /> Forçar Sincronização</button>
         </div>
       </div>
@@ -1210,11 +1232,11 @@ const App: React.FC = () => {
                         <col.icon className="w-4 h-4" /> {col.title}
                     </h3>
                     <span className={`bg-${col.color}-100 dark:bg-${col.color}-900/30 text-${col.color}-700 dark:text-${col.color}-400 text-[10px] px-2 py-0.5 rounded-full font-bold`}>
-                        {requests.filter(r => r.status === col.status).length}
+                        {filteredAdminRequests.filter(r => r.status === col.status).length}
                     </span>
                 </div>
                 <div className="flex-1 overflow-y-auto pr-1">
-                    {requests.filter(r => r.status === col.status).map(req => <RequestCard key={req.id} req={req} />)}
+                    {filteredAdminRequests.filter(r => r.status === col.status).map(req => <RequestCard key={req.id} req={req} />)}
                 </div>
             </div>
         ))}
