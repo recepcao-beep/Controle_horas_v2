@@ -418,21 +418,36 @@ export async function generateRhClosings(
     return dt.toISOString().slice(0, 10);
   };
 
-  const weekKey = (r: any) => {
-    const recordDates = (r.records || [])
-      .map((x: any) => clean(x?.date).slice(0, 10))
-      .filter((d: string) => /^\d{4}-\d{2}-\d{2}$/.test(d))
-      .sort();
-    if (recordDates.length) return mondayOf(recordDates[0]);
-    if (clean(r.weekStarting)) return mondayOf(clean(r.weekStarting));
-    return 'SEM-DATA';
+  const normalizeDate = (value: any) => {
+    const raw = clean(value);
+    if (!raw) return '';
+    const iso = raw.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
+    const br = raw.match(/^(\d{2})\/(\d{2})\/(\d{4})/);
+    if (br) return `${br[3]}-${br[2]}-${br[1]}`;
+    return '';
   };
 
-  // Consolida por SETOR + SEMANA, preservando a separação FIXO/REGISTRADO por colaborador.
+  const hasHours = (r: any) => !!(clean(r?.realEntry) || clean(r?.punchEntry) || clean(r?.punchExit) || clean(r?.realExit));
+
+  // Mescla registros repetidos do mesmo colaborador/data SEM deixar um registro
+  // posterior vazio apagar um horário que já existia no banco.
+  const mergeRecord = (oldRec: any, newRec: any, date: string) => ({
+    ...(oldRec || {}),
+    ...(newRec || {}),
+    date,
+    realEntry: clean(newRec?.realEntry) || clean(oldRec?.realEntry),
+    punchEntry: clean(newRec?.punchEntry) || clean(oldRec?.punchEntry),
+    punchExit: clean(newRec?.punchExit) || clean(oldRec?.punchExit),
+    realExit: clean(newRec?.realExit) || clean(oldRec?.realExit),
+  });
+
+  // Consolida por SETOR + SEMANA e, principalmente, divide CADA registro pela
+  // semana da sua própria data. Antes, uma solicitação com registros de mais de
+  // uma semana era classificada inteira pela primeira data e os demais dias
+  // podiam desaparecer do fechamento.
   const groups = new Map<string, any>();
-  for (const r of rows) {
-    const sector = clean(r.sectorName) || 'GERAL';
-    const week = weekKey(r);
+  const ensureEmployee = (sector: string, week: string, r: any) => {
     const key = `${sector.toUpperCase()}|${week}`;
     if (!groups.has(key)) groups.set(key, { sector, week, employees: new Map<string, any>() });
     const g = groups.get(key);
@@ -440,11 +455,27 @@ export async function generateRhClosings(
     if (!g.employees.has(empKey)) g.employees.set(empKey, {
       employeeName: clean(r.employeeName), employeeType: clean(r.employeeType).toUpperCase(), records: []
     });
-    const emp = g.employees.get(empKey);
-    for (const rec of r.records) {
-      if (!rec?.date) continue;
-      const idx = emp.records.findIndex((x: any) => x.date === rec.date);
-      if (idx >= 0) emp.records[idx] = rec; else emp.records.push(rec);
+    return g.employees.get(empKey);
+  };
+
+  for (const r of rows) {
+    const sector = clean(r.sectorName) || 'GERAL';
+    const validRecords = (r.records || []).filter((rec: any) => normalizeDate(rec?.date));
+
+    if (!validRecords.length) {
+      const fallbackDate = normalizeDate(r.weekStarting);
+      const week = fallbackDate ? mondayOf(fallbackDate) : 'SEM-DATA';
+      ensureEmployee(sector, week, r);
+      continue;
+    }
+
+    for (const rec of validRecords) {
+      const date = normalizeDate(rec.date);
+      const week = mondayOf(date);
+      const emp = ensureEmployee(sector, week, r);
+      const idx = emp.records.findIndex((x: any) => normalizeDate(x.date) === date);
+      if (idx >= 0) emp.records[idx] = mergeRecord(emp.records[idx], rec, date);
+      else emp.records.push(mergeRecord(null, rec, date));
     }
   }
 
@@ -594,6 +625,7 @@ export async function generateRhClosings(
       for (let i = 1; i < fixoChunks; i++) fixoSheets.push(`HE - FIXO ${i + 1}`);
 
       const updates: any[] = [];
+      const registeredVerification: any[] = [];
       const q = (name: string) => `'${name.replace(/'/g, "''")}'`;
       const put = (sheet: string, cell: string, value: any) => updates.push({ range: `${q(sheet)}!${cell}`, values: [[value ?? '']] });
 
@@ -605,7 +637,7 @@ export async function generateRhClosings(
         const firstDataRow = slot === 0 ? 11 : 35;
         put(sheet, 'B1', g.sector);
         put(sheet, `B${nameRow}`, emp.employeeName);
-        const recMap = new Map(emp.records.map((r: any) => [String(r.date).slice(0,10), r]));
+        const recMap = new Map(emp.records.map((r: any) => [normalizeDate(r.date), r]));
         if (g.week !== 'SEM-DATA') {
           for (let d = 0; d < 7; d++) {
             const rec: any = recMap.get(addDays(g.week, d));
@@ -615,6 +647,11 @@ export async function generateRhClosings(
             put(sheet, `D${row}`, rec.punchEntry || '');
             put(sheet, `G${row}`, rec.punchExit || '');
             put(sheet, `H${row}`, rec.realExit || '');
+            // Guarda os valores não vazios para conferir diretamente na cópia
+            // do MODELO RH antes de qualquer PDF ser exportado.
+            for (const [col, value] of [['C', rec.realEntry], ['D', rec.punchEntry], ['G', rec.punchExit], ['H', rec.realExit]] as any[]) {
+              if (clean(value)) registeredVerification.push({ range: `${q(sheet)}!${col}${row}`, expected: clean(value), employee: emp.employeeName, date: normalizeDate(rec.date) });
+            }
           }
         }
       });
@@ -644,11 +681,43 @@ export async function generateRhClosings(
       });
       fixoSheets.forEach(s => put(s, 'B1', g.sector));
 
+      // Trava de segurança: nenhum horário de REGISTRADO pode ser silenciosamente
+      // descartado. Se existe no banco, ele precisa pertencer aos 7 dias da folha.
+      for (const emp of regs) {
+        for (const rec of emp.records) {
+          const date = normalizeDate(rec.date);
+          if (!date || !hasHours(rec)) continue;
+          const offset = g.week === 'SEM-DATA' ? -1 : Math.round((Date.parse(date + 'T00:00:00Z') - Date.parse(g.week + 'T00:00:00Z')) / 86400000);
+          if (offset < 0 || offset > 6) {
+            throw new Error(`Falha de segurança no fechamento: ${emp.employeeName} possui horas em ${date}, mas a folha está na semana ${g.week}. O PDF não foi gerado para evitar perda de informação.`);
+          }
+        }
+      }
+
       if (updates.length) {
         await targetSheets.spreadsheets.values.batchUpdate({
           spreadsheetId: targetId,
           requestBody: { valueInputOption: 'USER_ENTERED', data: updates }
         });
+      }
+
+      // Conferência pós-gravação: se qualquer horário de REGISTRADO não estiver
+      // realmente na célula esperada, aborta o fechamento em vez de gerar um PDF
+      // incompleto. Assim a falha nunca mais passa silenciosamente.
+      if (registeredVerification.length) {
+        const check = await targetSheets.spreadsheets.values.batchGet({
+          spreadsheetId: targetId,
+          ranges: registeredVerification.map((v: any) => v.range),
+          valueRenderOption: 'FORMATTED_VALUE'
+        });
+        const got = check.data.valueRanges || [];
+        for (let i = 0; i < registeredVerification.length; i++) {
+          const exp = registeredVerification[i];
+          const actual = clean(got[i]?.values?.[0]?.[0]);
+          if (actual !== exp.expected) {
+            throw new Error(`Falha de conferência: ${exp.employee} em ${exp.date} deveria ter ${exp.expected} em ${exp.range}, mas foi gravado '${actual || 'VAZIO'}'. O PDF foi bloqueado para evitar fechamento incompleto.`);
+          }
+        }
       }
 
       // Cada setor vira UM PDF por tipo, reunindo todas as folhas daquele tipo.
