@@ -391,8 +391,13 @@ export async function generateRhClosings(
   const rows = values.slice(1).map((row: any[]) => {
     const obj: any = {};
     headers.forEach((h: string, i: number) => obj[h] = row[i]);
-    try { if (typeof obj.records === 'string') obj.records = JSON.parse(obj.records); } catch { obj.records = []; }
-    if (!Array.isArray(obj.records)) obj.records = [];
+    // Alguns backups antigos salvaram `records` como JSON mais de uma vez.
+    // Desembrulha até virar array, sem descartar silenciosamente os registros.
+    try {
+      let recs: any = obj.records;
+      for (let i = 0; i < 3 && typeof recs === 'string'; i++) recs = JSON.parse(recs);
+      obj.records = Array.isArray(recs) ? recs : [];
+    } catch { obj.records = []; }
     return obj;
   }).filter((r: any) => String(r.status || '').trim().toUpperCase() === 'APROVADO');
 
@@ -442,10 +447,8 @@ export async function generateRhClosings(
     realExit: clean(newRec?.realExit) || clean(oldRec?.realExit),
   });
 
-  // Consolida por SETOR + SEMANA e, principalmente, divide CADA registro pela
-  // semana da sua própria data. Antes, uma solicitação com registros de mais de
-  // uma semana era classificada inteira pela primeira data e os demais dias
-  // podiam desaparecer do fechamento.
+  // Consolida por SETOR + SEMANA usando a DATA DE CADA LANÇAMENTO como fonte
+  // de verdade. Solicitação sem horário não gera ficha em branco.
   const groups = new Map<string, any>();
   const ensureEmployee = (sector: string, week: string, r: any) => {
     const key = `${sector.toUpperCase()}|${week}`;
@@ -460,15 +463,8 @@ export async function generateRhClosings(
 
   for (const r of rows) {
     const sector = clean(r.sectorName) || 'GERAL';
-    const validRecords = (r.records || []).filter((rec: any) => normalizeDate(rec?.date));
-
-    if (!validRecords.length) {
-      const fallbackDate = normalizeDate(r.weekStarting);
-      const week = fallbackDate ? mondayOf(fallbackDate) : 'SEM-DATA';
-      ensureEmployee(sector, week, r);
-      continue;
-    }
-
+    // Só entram no fechamento dias que realmente possuem algum horário.
+    const validRecords = (r.records || []).filter((rec: any) => normalizeDate(rec?.date) && hasHours(rec));
     for (const rec of validRecords) {
       const date = normalizeDate(rec.date);
       const week = mondayOf(date);
@@ -478,6 +474,8 @@ export async function generateRhClosings(
       else emp.records.push(mergeRecord(null, rec, date));
     }
   }
+
+  if (!groups.size) throw new Error('Há solicitações aprovadas, mas nenhuma possui horários válidos para gerar o fechamento.');
 
   const addDays = (iso: string, days: number) => {
     const [y,m,d] = iso.split('-').map(Number);
@@ -594,6 +592,48 @@ export async function generateRhClosings(
 
   const results: any[] = [];
 
+  // Descobre as posições diretamente no MODELO RH. Assim uma mudança de uma
+  // linha no modelo não desloca nomes/horários para células erradas.
+  const templateLayoutCache = new Map<string, any>();
+  const getSheetLayout = async (spreadsheetId: string, sheetName: string, type: 'REGISTRADO'|'FIXO') => {
+    const cacheKey = `${spreadsheetId}|${sheetName}|${type}`;
+    if (templateLayoutCache.has(cacheKey)) return templateLayoutCache.get(cacheKey);
+    const vr = await targetSheets.spreadsheets.values.get({ spreadsheetId, range: `'${sheetName.replace(/'/g, "''")}'!A:Z`, valueRenderOption: 'FORMATTED_VALUE' });
+    const matrix: any[][] = vr.data.values || [];
+    const norm = (v: any) => clean(v).toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    const slots: any[] = [];
+    if (type === 'REGISTRADO') {
+      for (let r = 0; r < matrix.length; r++) {
+        for (let c = 0; c < (matrix[r] || []).length; c++) {
+          if (!norm(matrix[r]?.[c]).includes('NOME COMPLETO')) continue;
+          let mondayRow = -1;
+          for (let rr = r + 1; rr < Math.min(matrix.length, r + 20); rr++) {
+            if (norm(matrix[rr]?.[0]).includes('SEGUNDA-FEIRA')) { mondayRow = rr + 1; break; }
+          }
+          if (mondayRow > 0) slots.push({ nameRow: r + 1, nameCol: c + 2, firstDataRow: mondayRow });
+        }
+      }
+    }
+    const layout = { matrix, slots };
+    templateLayoutCache.set(cacheKey, layout);
+    return layout;
+  };
+
+  const colLetter = (n: number) => { let x=n, out=''; while(x>0){ const m=(x-1)%26; out=String.fromCharCode(65+m)+out; x=Math.floor((x-1)/26); } return out; };
+  const brDate = (iso: string) => { const [y,m,d]=iso.split('-'); return `${d}/${m}/${y}`; };
+
+  const putHeaderByLabels = (matrix: any[][], sheet: string, put: any, sector: string, week: string) => {
+    const norm = (v: any) => clean(v).toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    for (let r=0; r<Math.min(matrix.length, 12); r++) {
+      for (let c=0; c<(matrix[r]||[]).length; c++) {
+        const t=norm(matrix[r]?.[c]);
+        if (t.startsWith('SETOR')) put(sheet, `${colLetter(c+2)}${r+1}`, sector);
+        if (week !== 'SEM-DATA' && t === 'DATA:') put(sheet, `${colLetter(c+2)}${r+1}`, brDate(week));
+        if (week !== 'SEM-DATA' && (t === 'ATE' || t === 'ATE:')) put(sheet, `${colLetter(c+2)}${r+1}`, brDate(addDays(week,6)));
+      }
+    }
+  };
+
   for (const g of groups.values()) {
     const fileName = safeName(`TEMP-FECHAMENTO-${g.sector}-${dateFolder(g.week)}`);
     const copied = await drive.files.copy({
@@ -612,7 +652,10 @@ export async function generateRhClosings(
 
       const regs = Array.from(g.employees.values()).filter((e: any) => e.employeeType === 'REGISTRADO');
       const fixos = Array.from(g.employees.values()).filter((e: any) => e.employeeType === 'FIXO');
-      const regChunks = Math.max(1, Math.ceil(regs.length / 2));
+      const baseRegLayout = await getSheetLayout(targetId, 'HE - REGISTRADO', 'REGISTRADO');
+      if (!baseRegLayout.slots.length) throw new Error("Não encontrei os blocos 'NOME COMPLETO' / 'SEGUNDA-FEIRA' na aba HE - REGISTRADO do MODELO RH.");
+      const regSlotsPerSheet = baseRegLayout.slots.length;
+      const regChunks = Math.max(1, Math.ceil(regs.length / regSlotsPerSheet));
       const fixoChunks = Math.max(1, Math.ceil(fixos.length / 10));
 
       const regSheets = ['HE - REGISTRADO'];
@@ -629,33 +672,30 @@ export async function generateRhClosings(
       const q = (name: string) => `'${name.replace(/'/g, "''")}'`;
       const put = (sheet: string, cell: string, value: any) => updates.push({ range: `${q(sheet)}!${cell}`, values: [[value ?? '']] });
 
-      // REGISTRADO: 2 colaboradores por folha; fórmulas do modelo permanecem intactas.
-      regs.forEach((emp: any, idx: number) => {
-        const sheet = regSheets[Math.floor(idx / 2)];
-        const slot = idx % 2;
-        const nameRow = slot === 0 ? 4 : 28;
-        const firstDataRow = slot === 0 ? 11 : 35;
-        put(sheet, 'B1', g.sector);
-        put(sheet, `B${nameRow}`, emp.employeeName);
+      // REGISTRADO: usa os slots descobertos no próprio modelo e valida cada
+      // horário escrito. Nenhum colaborador sem horas entra na lista.
+      for (let idx = 0; idx < regs.length; idx++) {
+        const emp: any = regs[idx];
+        const sheet = regSheets[Math.floor(idx / regSlotsPerSheet)];
+        const layout = await getSheetLayout(targetId, sheet, 'REGISTRADO');
+        const slot = layout.slots[idx % regSlotsPerSheet];
+        if (!slot) throw new Error(`MODELO RH sem espaço REGISTRADO para ${emp.employeeName}.`);
+        putHeaderByLabels(layout.matrix, sheet, put, g.sector, g.week);
+        put(sheet, `${colLetter(slot.nameCol)}${slot.nameRow}`, emp.employeeName);
         const recMap = new Map(emp.records.map((r: any) => [normalizeDate(r.date), r]));
-        if (g.week !== 'SEM-DATA') {
-          for (let d = 0; d < 7; d++) {
-            const rec: any = recMap.get(addDays(g.week, d));
-            if (!rec) continue;
-            const row = firstDataRow + d;
-            put(sheet, `C${row}`, rec.realEntry || '');
-            put(sheet, `D${row}`, rec.punchEntry || '');
-            put(sheet, `G${row}`, rec.punchExit || '');
-            put(sheet, `H${row}`, rec.realExit || '');
-            // Guarda os valores não vazios para conferir diretamente na cópia
-            // do MODELO RH antes de qualquer PDF ser exportado.
-            for (const [col, value] of [['C', rec.realEntry], ['D', rec.punchEntry], ['G', rec.punchExit], ['H', rec.realExit]] as any[]) {
-              if (clean(value)) registeredVerification.push({ range: `${q(sheet)}!${col}${row}`, expected: clean(value), employee: emp.employeeName, date: normalizeDate(rec.date) });
-            }
+        for (let d = 0; d < 7; d++) {
+          const rec: any = recMap.get(addDays(g.week, d));
+          if (!rec) continue;
+          const row = slot.firstDataRow + d;
+          put(sheet, `C${row}`, rec.realEntry || '');
+          put(sheet, `D${row}`, rec.punchEntry || '');
+          put(sheet, `G${row}`, rec.punchExit || '');
+          put(sheet, `H${row}`, rec.realExit || '');
+          for (const [col, value] of [['C', rec.realEntry], ['D', rec.punchEntry], ['G', rec.punchExit], ['H', rec.realExit]] as any[]) {
+            if (clean(value)) registeredVerification.push({ range: `${q(sheet)}!${col}${row}`, expected: clean(value), employee: emp.employeeName, date: normalizeDate(rec.date) });
           }
         }
-      });
-      regSheets.forEach(s => put(s, 'B1', g.sector));
+      }
 
       // FIXO: 10 colaboradores por folha (5 blocos x 2 colunas).
       const fixedSlots = [
@@ -679,7 +719,10 @@ export async function generateRhClosings(
           put(sheet, `${slot.exit}${row}`, rec.realExit || '');
         });
       });
-      fixoSheets.forEach(s => put(s, 'B1', g.sector));
+      for (const s of fixoSheets) {
+        const fx = await targetSheets.spreadsheets.values.get({ spreadsheetId: targetId, range: `${q(s)}!A1:Z12`, valueRenderOption: 'FORMATTED_VALUE' });
+        putHeaderByLabels(fx.data.values || [], s, put, g.sector, g.week);
+      }
 
       // Trava de segurança: nenhum horário de REGISTRADO pode ser silenciosamente
       // descartado. Se existe no banco, ele precisa pertencer aos 7 dias da folha.
@@ -692,6 +735,12 @@ export async function generateRhClosings(
             throw new Error(`Falha de segurança no fechamento: ${emp.employeeName} possui horas em ${date}, mas a folha está na semana ${g.week}. O PDF não foi gerado para evitar perda de informação.`);
           }
         }
+      }
+
+      const expectedRegEmployees = regs.filter((e: any) => e.records.some((r: any) => hasHours(r))).length;
+      const expectedRegCells = regs.reduce((n: number, e: any) => n + e.records.reduce((m: number, r: any) => m + [r.realEntry,r.punchEntry,r.punchExit,r.realExit].filter((v:any)=>clean(v)).length, 0), 0);
+      if (expectedRegEmployees !== regs.length || expectedRegCells !== registeredVerification.length) {
+        throw new Error(`Falha de auditoria REGISTRADO em ${g.sector}/${g.week}: esperados ${regs.length} colaboradores e ${expectedRegCells} horários; preparados ${expectedRegEmployees} colaboradores e ${registeredVerification.length} horários.`);
       }
 
       if (updates.length) {
