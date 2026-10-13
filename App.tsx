@@ -50,6 +50,7 @@ import {
   CartesianGrid
 } from 'recharts';
 import * as XLSX from 'xlsx';
+import { diff, hasChanges, rebase, type Snapshot } from './src/sync';
 import { saveAs } from 'file-saver';
 import { 
   EmployeeType, 
@@ -195,7 +196,23 @@ const App: React.FC = () => {
     configRef.current = { overtimeMultiplier, valeTransporteValue };
   }, [overtimeMultiplier, valeTransporteValue]);
 
-  const lastSyncedDataRef = useRef<string>("");
+  const currentSnapshot = { sectors, employees, requests, overtimeMultiplier, valeTransporteValue };
+  const currentSnapshotRef = useRef<Snapshot>(currentSnapshot);
+  currentSnapshotRef.current = currentSnapshot;
+  const syncBaseRef = useRef<Snapshot>(getInitialValue('syncBase', currentSnapshot));
+  const syncBaseUrlRef = useRef(getInitialValue('syncBaseUrl', dbUrl));
+  const networkBusyRef = useRef(false);
+  const [syncError, setSyncError] = useState('');
+  const [syncRevision, setSyncRevision] = useState(0);
+  const pendingSync = hasChanges(diff(syncBaseRef.current, currentSnapshot));
+  const applySnapshot = (snapshot: Snapshot) => {
+    currentSnapshotRef.current = snapshot;
+    setSectors(snapshot.sectors as Sector[]);
+    setEmployees(snapshot.employees as Employee[]);
+    setRequests(snapshot.requests as TimeRequest[]);
+    setOvertimeMultiplier(snapshot.overtimeMultiplier);
+    setValeTransporteValue(snapshot.valeTransporteValue);
+  };
   const [generatedLink, setGeneratedLink] = useState('');
 
   const exportToExcel = useCallback(() => {
@@ -319,24 +336,19 @@ const App: React.FC = () => {
       return;
     }
 
-    setIsSyncing(true);
-    
-    // Fallback/Preliminary load from localStorage to show data immediately
-    const localData = localStorage.getItem(STORAGE_KEY);
-    if (localData && isInitialLoad) {
-      try {
-        const parsed = JSON.parse(localData);
-        if (parsed.sectors) setSectors(parsed.sectors);
-        if (parsed.employees) setEmployees(parsed.employees);
-        if (parsed.requests) setRequests(parsed.requests);
-        if (parsed.overtimeMultiplier) setOvertimeMultiplier(parsed.overtimeMultiplier);
-        if (parsed.valeTransporteValue) setValeTransporteValue(parsed.valeTransporteValue);
-      } catch (e) {}
+    if (networkBusyRef.current) return;
+    // Do not carry pending edits into a different spreadsheet.
+    const sameDatabase = extractSpreadsheetId(targetUrl) === extractSpreadsheetId(syncBaseUrlRef.current);
+    if (!sameDatabase && hasChanges(diff(syncBaseRef.current, currentSnapshotRef.current))) {
+      setAlertMessage('Sincronize os lançamentos pendentes antes de trocar a planilha.');
+      return;
     }
-
+    networkBusyRef.current = true;
+    setIsSyncing(true);
+    const baseAtStart = sameDatabase ? syncBaseRef.current : currentSnapshotRef.current;
     try {
       const spreadsheetId = extractSpreadsheetId(targetUrl);
-      const response = await fetch(`/api/sheets/load?spreadsheetId=${spreadsheetId}`);
+      const response = await fetch(`/api/sheets/load?spreadsheetId=${encodeURIComponent(spreadsheetId)}`, { cache: 'no-store', signal: AbortSignal.timeout(25000) });
       
       let data;
       try {
@@ -356,6 +368,9 @@ const App: React.FC = () => {
         setIsServiceAccountSetup(true);
       }
       
+      if (!data || !Array.isArray(data.sectors) || !Array.isArray(data.employees) || !Array.isArray(data.requests)) {
+        throw new Error(data?.error || 'Resposta inválida da planilha.');
+      }
       if (data && !data.error) {
         console.log("[Load] Dados recebidos da planilha:", data);
         if (data.sectors) console.log(`[Load] ${data.sectors.length} setores encontrados.`);
@@ -423,8 +438,8 @@ const App: React.FC = () => {
         })).values()) as TimeRequest[];
 
         // Use hardcoded defaults if missing in both sheet and state
-        let finalOvertime = overtimeMultiplier;
-        let finalVT = valeTransporteValue;
+        let finalOvertime = currentSnapshotRef.current.overtimeMultiplier;
+        let finalVT = currentSnapshotRef.current.valeTransporteValue;
 
         if (data.config) {
           const config = data.config;
@@ -440,58 +455,38 @@ const App: React.FC = () => {
           const ovVal = getVal('overtimeMultiplier', 'multiplicadorhe', 'he', 'overtime');
           if (ovVal !== undefined && ovVal !== null && ovVal !== "") {
             finalOvertime = parseNumber(ovVal, 1.25);
-            setOvertimeMultiplier(finalOvertime);
+
           }
           const vtVal = getVal('valeTransporteValue', 'valetransporte', 'vt');
           if (vtVal !== undefined && vtVal !== null && vtVal !== "") {
             finalVT = parseNumber(vtVal, 12.0);
-            setValeTransporteValue(finalVT);
+
           }
         }
 
-        if (uniqueSectors.length > 0) {
-          setSectors(uniqueSectors);
-        } else if (data.sectors && data.sectors.length > 0) {
-          console.warn("[Load] Setores encontrados na planilha mas falha no processamento de IDs.");
-        }
-        
-        if (uniqueEmployees.length > 0) {
-          setEmployees(uniqueEmployees);
-        }
-        
-        setRequests(uniqueRequests);
-        
+        const remote: Snapshot = {
+          sectors: uniqueSectors, employees: uniqueEmployees, requests: uniqueRequests,
+          overtimeMultiplier: finalOvertime, valeTransporteValue: finalVT
+        };
+        const merged = rebase(baseAtStart, currentSnapshotRef.current, remote);
+        syncBaseRef.current = remote;
+        syncBaseUrlRef.current = targetUrl;
+        applySnapshot(merged);
+        setSyncRevision(value => value + 1);
+        setSyncError('');
         if (urlToUse) setDbUrl(urlToUse);
-        
-        const dataToSyncId = JSON.stringify({
-          sectors: uniqueSectors,
-          employees: uniqueEmployees,
-          requests: uniqueRequests,
-          overtimeMultiplier: finalOvertime,
-          valeTransporteValue: finalVT
-        });
-
-        lastSyncedDataRef.current = dataToSyncId;
-
         localStorage.setItem(STORAGE_KEY, JSON.stringify({
-          sectors: uniqueSectors,
-          employees: uniqueEmployees,
-          requests: uniqueRequests,
-          dbUrl: targetUrl,
-          scriptUrl,
-          folderRegId,
-          folderFixoId,
-          overtimeMultiplier: finalOvertime,
-          valeTransporteValue: finalVT
+          ...merged, syncBase: remote, syncBaseUrl: targetUrl, dbUrl: targetUrl, scriptUrl, folderRegId, folderFixoId
         }));
       } else if (data && data.error) {
         throw new Error(data.error);
       }
     } catch (error: any) {
       console.error("[Load] Erro ao carregar dados:", error);
-      setAlertMessage(`Falha ao carregar dados da planilha: ${error.message}. Usando base local.`);
+      setSyncError(`Sem atualização da planilha: ${error.message}. Os dados locais estão preservados.`);
       // Data already loaded from localStorage at the start of this function
     } finally {
+      networkBusyRef.current = false;
       setIsSyncing(false);
       setIsInitialLoad(false);
     }
@@ -660,62 +655,39 @@ const App: React.FC = () => {
   };
 
   const syncDatabase = useCallback(async (currentData: { sectors: Sector[], employees: Employee[], requests: TimeRequest[] }, explicitConfig?: { overtimeMultiplier: number, valeTransporteValue: number }) => {
-    if (!dbUrl) return;
-
+    if (!dbUrl || networkBusyRef.current) return;
+    if (extractSpreadsheetId(dbUrl) !== extractSpreadsheetId(syncBaseUrlRef.current)) { await loadDatabase(); return; }
+    const sent: Snapshot = { ...currentData, ...(explicitConfig || configRef.current) };
+    const changes = diff(syncBaseRef.current, sent);
+    if (!hasChanges(changes)) { await loadDatabase(); return; }
+    networkBusyRef.current = true;
     setIsSyncing(true);
-    // Use refs or explicit values to avoid unnecessary dependency-triggered recreations
-    const configToSync = explicitConfig || { overtimeMultiplier: configRef.current.overtimeMultiplier, valeTransporteValue: configRef.current.valeTransporteValue };
-
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...currentData, dbUrl, scriptUrl, folderRegId, folderFixoId, overtimeMultiplier: configToSync.overtimeMultiplier, valeTransporteValue: configToSync.valeTransporteValue }));
-      
-      const spreadsheetId = extractSpreadsheetId(dbUrl);
+      // Keep both pending edits and their acknowledged base across reloads/offline sessions.
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({
+        ...currentSnapshotRef.current, syncBase: syncBaseRef.current, syncBaseUrl: syncBaseUrlRef.current, dbUrl, scriptUrl, folderRegId, folderFixoId
+      }));
       const response = await fetch('/api/sheets/sync', {
-        method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-          'Cache-Control': 'no-cache'
-        },
-        body: JSON.stringify({
-          spreadsheetId,
-          sectors: currentData.sectors,
-          employees: currentData.employees,
-          requests: currentData.requests,
-          config: configToSync
-        })
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        signal: AbortSignal.timeout(45000),
+        body: JSON.stringify({ spreadsheetId: extractSpreadsheetId(dbUrl), changes })
       });
-      
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error || `Erro do servidor: ${response.status}`);
-      }
-
       const result = await response.json();
-      if (!result.success) throw new Error(result.error || "Erro na sincronização via API");
-
-      // Update sync ref to prevent immediate re-sync from the effect
-      lastSyncedDataRef.current = JSON.stringify({ 
-        sectors: currentData.sectors, 
-        employees: currentData.employees, 
-        requests: currentData.requests, 
-        overtimeMultiplier: configToSync.overtimeMultiplier, 
-        valeTransporteValue: configToSync.valeTransporteValue 
-      });
+      if (!response.ok || !result.success) throw new Error(result.error || `Erro do servidor: ${response.status}`);
+      syncBaseRef.current = sent;
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({
+        ...currentSnapshotRef.current, syncBase: sent, syncBaseUrl: syncBaseUrlRef.current, dbUrl, scriptUrl, folderRegId, folderFixoId
+      }));
+      setSyncError('');
+      if (result.warning) console.warn(result.warning);
+      setSyncRevision(value => value + 1);
     } catch (error: any) {
-      console.error("Erro detalhado de sincronização:", error);
-      
-      if (error.message && error.message.includes('Conta de Serviço')) {
-        setAlertMessage(error.message);
-      } else if (error.message && error.message.includes('Planilha não encontrada')) {
-        setAlertMessage(error.message);
-      } else {
-        setAlertMessage(`Erro de Sincronização: ${error.message}. Verifique sua conexão.`);
-      }
+      setSyncError(`Envio pendente: ${error.message}. Tentaremos novamente automaticamente.`);
     } finally {
+      networkBusyRef.current = false;
       setIsSyncing(false);
     }
-  }, [dbUrl, scriptUrl, folderRegId, folderFixoId]);
+  }, [dbUrl, scriptUrl, folderRegId, folderFixoId, loadDatabase]);
 
   useEffect(() => {
     if (hasLoadedRef.current) return;
@@ -737,24 +709,32 @@ const App: React.FC = () => {
   }, [loadDatabase, dbUrl]);
 
   useEffect(() => {
-    if (!isInitialLoad && state.view !== 'EXPIRED') {
-      const currentData = { sectors, employees, requests, overtimeMultiplier, valeTransporteValue };
-      const currentDataString = JSON.stringify(currentData);
-      
-      // Só sincroniza se houver mudança REAL em relação ao último estado sincronizado
-      // E garante que não estamos enviando dados vazios/iniciais por engano
-      if (lastSyncedDataRef.current && currentDataString !== lastSyncedDataRef.current) {
-        const timer = setTimeout(() => {
-          syncDatabase({ sectors, employees, requests }, { overtimeMultiplier, valeTransporteValue });
-          lastSyncedDataRef.current = currentDataString;
-        }, 2000); // Aumentado para 2s para evitar conflitos em dispositivos lentos
-        return () => clearTimeout(timer);
-      } else if (!lastSyncedDataRef.current) {
-        // Primeira vez que o ref é preenchido após load
-        lastSyncedDataRef.current = currentDataString;
-      }
-    }
-  }, [sectors, employees, requests, overtimeMultiplier, valeTransporteValue, isInitialLoad, syncDatabase, state.view]);
+    if (isInitialLoad || state.view === 'EXPIRED' || !pendingSync) return;
+    const timer = window.setTimeout(() => {
+      const latest = currentSnapshotRef.current;
+      void syncDatabase(latest as any, latest);
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [sectors, employees, requests, overtimeMultiplier, valeTransporteValue, isInitialLoad, syncDatabase, state.view, syncRevision]);
+
+  useEffect(() => {
+    const refresh = () => {
+      if (state.view === 'EXPIRED' || document.visibilityState === 'hidden' || networkBusyRef.current) return;
+      const latest = currentSnapshotRef.current;
+      if (hasChanges(diff(syncBaseRef.current, latest))) void syncDatabase(latest as any, latest);
+      else void loadDatabase();
+    };
+    const timer = window.setInterval(refresh, 30000);
+    window.addEventListener('online', refresh);
+    window.addEventListener('focus', refresh);
+    document.addEventListener('visibilitychange', refresh);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener('online', refresh);
+      window.removeEventListener('focus', refresh);
+      document.removeEventListener('visibilitychange', refresh);
+    };
+  }, [loadDatabase, syncDatabase, state.view]);
 
   useEffect(() => {
     if (showFormModal && !editingRequestId) {
@@ -797,11 +777,13 @@ const App: React.FC = () => {
   }, [showFormModal, currentWeek, editingRequestId, selectedEmployee, employees]);
 
   useEffect(() => {
-    if (!isInitialLoad) {
+    {
       localStorage.setItem(STORAGE_KEY, JSON.stringify({
         sectors,
         employees,
         requests,
+        syncBase: syncBaseRef.current,
+        syncBaseUrl: syncBaseUrlRef.current,
         dbUrl,
         scriptUrl,
         folderRegId,
@@ -2208,14 +2190,21 @@ function testeManual() {
         </div>
       )}
 
+      {(pendingSync || syncError) && (
+        <div role="status" className="fixed bottom-4 left-4 right-4 z-50 mx-auto max-w-xl rounded-xl bg-amber-100 px-4 py-3 text-sm text-amber-950 shadow-lg">
+          {syncError || (isSyncing ? 'Enviando alterações para a planilha...' : 'Há alterações salvas neste aparelho aguardando envio.')}
+          <button className="ml-3 font-bold underline" onClick={() => syncDatabase(currentSnapshotRef.current as any, currentSnapshotRef.current)}>Tentar agora</button>
+        </div>
+      )}
+
       {state.view === 'SUCCESS' && (
         <div className="flex flex-col items-center justify-center min-h-[80vh] text-center px-4">
           <div className="bg-white dark:bg-gray-800 p-8 md:p-12 rounded-3xl shadow-2xl max-w-lg w-full transform transition hover:scale-105 duration-300 border border-transparent dark:border-gray-700">
             <div className="bg-green-100 dark:bg-green-900/30 w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-8 shadow-lg shadow-green-100 dark:shadow-none">
               <CheckCircle className="text-green-600 dark:text-green-400 w-10 h-10" />
             </div>
-            <h1 className="text-3xl md:text-4xl font-extrabold text-gray-800 dark:text-white mb-4">Ok, registrado!</h1>
-            <p className="text-gray-500 dark:text-gray-400 mb-10 text-base md:text-lg">Muito obrigado pelo preenchimento.</p>
+            <h1 className="text-3xl md:text-4xl font-extrabold text-gray-800 dark:text-white mb-4">{pendingSync ? 'Aguardando envio' : 'Ok, registrado!'}</h1>
+            <p className="text-gray-500 dark:text-gray-400 mb-10 text-base md:text-lg">{pendingSync ? 'Salvo neste aparelho. Aguarde a confirmação de envio antes de fechar.' : 'Envio confirmado. O lançamento está salvo na planilha compartilhada.'}</p>
             <button 
               onClick={() => setState(prev => ({ ...prev, view: 'HOME' }))} 
               className="w-full bg-gray-800 dark:bg-gray-700 hover:bg-gray-900 dark:hover:bg-gray-600 text-white font-bold py-4 px-8 rounded-xl transition shadow-xl flex items-center justify-center gap-3 text-lg"

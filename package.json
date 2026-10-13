@@ -8,7 +8,8 @@
     "build": "vite build",
     "start": "tsx api/server.ts",
     "preview": "vite preview",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "test": "node --import tsx --test src/sync.test.ts"
   },
   "dependencies": {
     "cookie-parser": "^1.4.7",
