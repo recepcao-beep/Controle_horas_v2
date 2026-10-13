@@ -650,7 +650,7 @@ export async function generateRhClosings(
       const templateFixo = info.data.sheets?.find((s: any) => s.properties?.title === 'HE - FIXO');
       if (!templateReg || !templateFixo) throw new Error("O MODELO RH precisa conter as abas 'HE - REGISTRADO' e 'HE - FIXO'.");
 
-      const regs = Array.from(g.employees.values()).filter((e: any) => e.employeeType === 'REGISTRADO');
+      const regs = Array.from<any>(g.employees.values()).filter((e: any) => e.employeeType === 'REGISTRADO');
       const fixos = Array.from(g.employees.values()).filter((e: any) => e.employeeType === 'FIXO');
       const baseRegLayout = await getSheetLayout(targetId, 'HE - REGISTRADO', 'REGISTRADO');
       if (!baseRegLayout.slots.length) throw new Error("Não encontrei os blocos 'NOME COMPLETO' / 'SEGUNDA-FEIRA' na aba HE - REGISTRADO do MODELO RH.");

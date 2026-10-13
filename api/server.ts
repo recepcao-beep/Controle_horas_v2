@@ -4,6 +4,7 @@ import { google } from 'googleapis';
 import cookieParser from 'cookie-parser';
 import session from 'express-session';
 import dotenv from 'dotenv';
+import { saveChanges, validateChanges } from '../src/server/sync.js';
 import { distributeData, performClosing, generateRhClosings } from '../src/server/closing.js';
 
 dotenv.config();
@@ -67,6 +68,7 @@ app.get('/api/config/service-account', (req, res) => {
 });
 
 app.get('/api/sheets/load', async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
   const spreadsheetId = req.query.spreadsheetId as string;
   if (!spreadsheetId) return res.status(400).json({ error: 'Spreadsheet ID is required' });
 
@@ -100,7 +102,10 @@ app.get('/api/sheets/load', async (req, res) => {
       const targetName = normalize(r.split('!')[0]);
       return sheetNames.some(sn => normalize(sn) === targetName);
     });
-    console.log(`[API] Fetching ranges:`, existingRanges);
+    const exactRanges = existingRanges.map(r => {
+      const title = sheetNames.find(sn => normalize(sn) === normalize(r.split('!')[0]))!;
+      return `'${title.replace(/'/g, "''")}'!A:Z`;
+    });
 
     if (existingRanges.length === 0) {
       console.log(`[API] No matching sheets found. Returning empty data.`);
@@ -109,7 +114,7 @@ app.get('/api/sheets/load', async (req, res) => {
 
     const valuesResponse = await sheets.spreadsheets.values.batchGet({
       spreadsheetId,
-      ranges: existingRanges,
+      ranges: exactRanges,
       valueRenderOption: 'UNFORMATTED_VALUE',
       dateTimeRenderOption: 'FORMATTED_STRING',
     });
@@ -140,7 +145,7 @@ app.get('/api/sheets/load', async (req, res) => {
         return obj;
       });
       console.log(`[API] Parsed ${parsed.length} rows from ${title}.`);
-      return parsed;
+      return parsed.filter(row => String(row.syncdeleted).toLowerCase() !== 'true');
     };
 
     const configData = parseSheet('Config');
@@ -170,112 +175,30 @@ app.get('/api/sheets/load', async (req, res) => {
 });
 
 app.post('/api/sheets/sync', async (req, res) => {
-  const { spreadsheetId, sectors, employees, requests, config } = req.body;
-
+  const { spreadsheetId, changes } = req.body;
   if (!spreadsheetId) return res.status(400).json({ error: 'Spreadsheet ID is required' });
-
-  if (!process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL || !process.env.GOOGLE_PRIVATE_KEY) {
-    return res.json({ success: false, needsSetup: true, error: 'As credenciais da Conta de Serviço não estão configuradas.' });
+  if (!validateChanges(changes)) {
+    return res.status(409).json({ success: false, error: 'Atualize a página para usar a nova sincronização. Seus dados locais foram preservados.' });
   }
-
   try {
-    const auth = getGoogleAuth();
-    const sheets = google.sheets({ version: 'v4', auth });
-    
-    // Ensure sheets exist
-    const ssInfo = await sheets.spreadsheets.get({ spreadsheetId });
-    const existingSheetNames = ssInfo.data.sheets?.map(s => s.properties?.title || '') || [];
-    const requiredSheets = ['Setores', 'Funcionarios', 'Solicitacoes', 'Config', 'HE - REGISTRADO', 'HE - FIXO'];
-    const sheetsToCreate = requiredSheets.filter(rs => !existingSheetNames.includes(rs));
-
-    if (sheetsToCreate.length > 0) {
-      await sheets.spreadsheets.batchUpdate({
-        spreadsheetId,
-        requestBody: {
-          requests: sheetsToCreate.map(title => ({
-            addSheet: { properties: { title } }
-          }))
-        }
-      });
-    }
-
-    const prepareData = (data: any[]) => {
-      if (!data || data.length === 0) return [];
-      
-      // Get all unique keys from all objects to ensure all columns are represented
-      const allKeys = new Set<string>();
-      data.forEach(item => {
-        Object.keys(item).forEach(key => allKeys.add(key));
-      });
-      const headers = Array.from(allKeys);
-
-      const rows = data.map(item => headers.map(h => {
-        const val = item[h];
-        if (val === undefined || val === null) return '';
-        return (typeof val === 'object') ? JSON.stringify(val) : val;
-      }));
-      return [headers, ...rows];
-    };
-
-    const sortedRequests = [...requests].sort((a, b) => {
-      const sectorA = (a.sectorName || "").toUpperCase();
-      const sectorB = (b.sectorName || "").toUpperCase();
-      if (sectorA < sectorB) return -1;
-      if (sectorA > sectorB) return 1;
-      return (a.employeeName || "").localeCompare(b.employeeName || "");
-    });
-
-    // Find exact sheet names to avoid case-sensitivity issues during clear/update
-    const getExactName = (name: string) => {
-      const match = existingSheetNames.find(sn => sn.toLowerCase().trim() === name.toLowerCase().trim());
-      return match || name;
-    };
-
-    const configRows = config ? Object.entries(config).map(([key, value]) => ({ key, value })) : [];
-
-    const syncItems = [
-      { sheet: getExactName('Setores'), values: prepareData(sectors) },
-      { sheet: getExactName('Funcionarios'), values: prepareData(employees) },
-      { sheet: getExactName('Solicitacoes'), values: prepareData(sortedRequests) },
-      { sheet: getExactName('Config'), values: prepareData(configRows) }
-    ];
-
-    // Clear all target sheets first to ensure deletions are reflected
-    for (const item of syncItems) {
+    const sheets = google.sheets({ version: 'v4', auth: getGoogleAuth() });
+    await saveChanges(sheets, spreadsheetId, changes);
+    // Derived reports use the shared table, never one device's stale snapshot.
+    let warning;
+    if (changes.requests.length) {
       try {
-        await sheets.spreadsheets.values.clear({
-          spreadsheetId,
-          range: `'${item.sheet}'!A:Z`,
-        });
-      } catch (e) {
-        console.warn(`[Sync] Could not clear sheet ${item.sheet}:`, (e as any).message);
+        const loaded = await sheets.spreadsheets.values.get({ spreadsheetId, range: 'Solicitacoes!A:Z', valueRenderOption: 'UNFORMATTED_VALUE' });
+        const rows = loaded.data.values || [];
+        const keys: Record<string, string> = Object.fromEntries(['id', 'employeeName', 'employeeType', 'sectorName', 'records', 'status', 'syncDeleted'].map(key => [key.toLowerCase(), key]));
+        const headers = (rows[0] || []).map(h => keys[String(h).toLowerCase()] || String(h));
+        const requests = rows.slice(1).map(row => Object.fromEntries(headers.map((key, i) => [key, row[i]])));
+        await distributeData(sheets, spreadsheetId, Array.from(new Map(requests.map(row => [row.id, row])).values()).filter(row => String(row.syncDeleted).toLowerCase() !== 'true'));
+      } catch (error: any) {
+        warning = 'Lançamentos salvos; as abas de relatório precisam ser atualizadas: ' + error.message;
+        console.error(warning);
       }
     }
-
-    // Filter out empty data for update
-    const updateData = syncItems
-      .filter(item => item.values.length > 0)
-      .map(item => ({ range: `'${item.sheet}'!A1`, values: item.values }));
-
-    if (updateData.length > 0) {
-      await sheets.spreadsheets.values.batchUpdate({
-        spreadsheetId,
-        requestBody: {
-          valueInputOption: 'RAW',
-          data: updateData,
-        },
-      });
-    }
-
-    // Distribute data to HE - REGISTRADO and HE - FIXO
-    try {
-      await distributeData(sheets, spreadsheetId, requests);
-    } catch (e: any) {
-      console.error("Error distributing data:", e.message);
-      // We don't fail the whole sync if distribution fails, but we log it
-    }
-
-    res.json({ success: true });
+    res.json({ success: true, warning });
   } catch (error: any) {
     console.error('Error syncing sheets data:', error);
     
