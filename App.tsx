@@ -153,6 +153,7 @@ const App: React.FC = () => {
   const [editingEmployeeId, setEditingEmployeeId] = useState<string | null>(null);
   
   const [modalRecords, setModalRecords] = useState<TimeRecord[]>([]);
+  const initializedFormRef = useRef<string | null>(null);
 
   // Edição e Controle de Acesso
   const [editingRequestId, setEditingRequestId] = useState<string | null>(null);
@@ -737,6 +738,15 @@ const App: React.FC = () => {
   }, [loadDatabase, syncDatabase, state.view]);
 
   useEffect(() => {
+    if (!showFormModal || editingRequestId) {
+      initializedFormRef.current = null;
+      return;
+    }
+    // A remote refresh replaces `employees`, but must not reset an open draft.
+    // Initialize only when opening a new form or explicitly changing its context.
+    const formKey = JSON.stringify([selectedEmployee, currentWeek]);
+    if (initializedFormRef.current === formKey) return;
+    initializedFormRef.current = formKey;
     if (showFormModal && !editingRequestId) {
       const weekDays = getWeekDays(new Date(currentWeek));
       const employee = employees.find(e => e.id === selectedEmployee);
