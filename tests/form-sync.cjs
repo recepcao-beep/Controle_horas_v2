@@ -27,7 +27,7 @@ const assert = require('node:assert/strict');
         if (url.hostname === 'cdn.tailwindcss.com') return route.fulfill({ body: 'window.tailwind = {};', contentType: 'application/javascript' });
         if (url.hostname !== 'form.test') return route.abort();
         const file = path.join(process.cwd(), 'dist', url.pathname === '/' ? 'index.html' : url.pathname);
-        return fs.existsSync(file) ? route.fulfill({ body: fs.readFileSync(file), contentType: file.endsWith('.js') ? 'application/javascript' : 'text/html' }) : route.fulfill({ status: 404, body: '' });
+        return fs.existsSync(file) ? route.fulfill({ body: fs.readFileSync(file), contentType: file.endsWith('.js') ? 'application/javascript' : file.endsWith('.css') ? 'text/css' : 'text/html' }) : route.fulfill({ status: 404, body: '' });
       });
       await page.goto('http://form.test/');
       await page.waitForFunction(() => JSON.parse(localStorage.getItem('controle_horas_db_v3') || '{}').employees?.length === 1);

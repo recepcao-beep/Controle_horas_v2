@@ -2139,10 +2139,11 @@ function testeManual() {
 
       {state.view === 'HOME' && (
         <div className="flex flex-col items-center justify-center min-h-[80vh] text-center px-4">
-          <div className="bg-white dark:bg-gray-800 p-8 md:p-12 rounded-3xl shadow-2xl max-w-lg w-full transform transition hover:scale-105 duration-300 border border-transparent dark:border-gray-700">
+          <div className="welcome-card bg-white dark:bg-gray-800 p-8 md:p-12 rounded-3xl shadow-2xl max-w-lg w-full border dark:border-gray-700">
             <div className="bg-blue-600 w-16 h-16 md:w-20 md:h-20 rounded-2xl flex items-center justify-center mx-auto mb-8 shadow-lg shadow-blue-200 dark:shadow-none"><ClipboardList className="text-white w-8 h-8 md:w-10 md:h-10" /></div>
+            <p className="welcome-eyebrow">JORNADA SEMANAL</p>
             <h1 className="text-3xl md:text-4xl font-extrabold text-gray-800 dark:text-white mb-4">Controle de Horas</h1>
-            <p className="text-gray-500 dark:text-gray-400 mb-10 text-base md:text-lg">Gerenciamento eficiente de jornadas semanais.</p>
+            <p className="text-gray-500 dark:text-gray-400 mb-10 text-base md:text-lg">Registre seus horários e acompanhe sua semana.</p>
             <button onClick={() => setState(prev => ({ ...prev, view: 'SELECTION' }))} className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-4 px-8 rounded-xl transition shadow-xl shadow-blue-100 dark:shadow-none flex items-center justify-center gap-3 group text-lg">
               Começar <Play className="w-5 h-5 group-hover:translate-x-1 transition" />
             </button>
@@ -2883,10 +2884,10 @@ function testeManual() {
 
       {showFormModal && (
         <div className="fixed inset-0 bg-white dark:bg-gray-900 md:bg-black/60 md:dark:bg-black/80 md:backdrop-blur-sm z-[60] flex items-center justify-center md:p-4 overflow-hidden">
-          <div className="bg-white dark:bg-gray-800 md:rounded-3xl shadow-2xl w-full max-w-4xl h-full md:max-h-[90vh] overflow-y-auto p-4 md:p-8 relative flex flex-col">
+          <div className="time-entry-panel bg-white dark:bg-gray-800 md:rounded-3xl shadow-2xl w-full max-w-4xl h-full md:max-h-[90vh] overflow-y-auto p-4 md:p-8 relative flex flex-col">
             <button onClick={() => { setShowFormModal(false); setEditingRequestId(null); setEditingRequestSectorId(''); }} className="absolute top-4 right-4 text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 bg-gray-100 dark:bg-gray-700 rounded-full p-1"><XCircle className="w-8 h-8" /></button>
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6 mt-2 md:mt-0">
-              <h2 className="text-2xl font-bold dark:text-white">Fechamento Semanal</h2>
+              <div className="entry-heading"><h2 className="text-2xl font-bold dark:text-white">Fechamento Semanal</h2><p className="entry-subtitle">Preencha os horários de cada dia e salve ao finalizar.</p></div>
               <div className="flex items-center gap-4 bg-gray-50 dark:bg-gray-900 p-2 rounded-xl border border-gray-100 dark:border-gray-700"><span className="text-sm font-medium text-gray-500 dark:text-gray-400">Semana:</span><input type="date" className="bg-transparent text-black dark:text-white outline-none text-sm font-bold" value={currentWeek} onChange={(e) => !editingRequestId && setCurrentWeek(e.target.value)} disabled={!!editingRequestId} /></div>
             </div>
             {editingRequestId && requests.find(r => r.id === editingRequestId)?.employeeType === EmployeeType.FIXO && (
@@ -2908,7 +2909,7 @@ function testeManual() {
                 const isRegistradoFlow = activeRequestType === EmployeeType.REGISTRADO;
 
                 return (
-                  <div key={idx} className="bg-gray-50 dark:bg-gray-900 p-4 md:p-6 rounded-2xl border border-gray-100 dark:border-gray-700 shadow-sm space-y-3">
+                  <div key={idx} className="day-card bg-gray-50 dark:bg-gray-900 p-4 md:p-6 rounded-2xl border border-gray-100 dark:border-gray-700 shadow-sm space-y-3">
                     <div className="flex justify-between items-center border-b dark:border-gray-700 pb-2 border-gray-200">
                       <span className="font-bold text-gray-800 dark:text-gray-200 capitalize text-lg">{new Date(r.date + 'T00:00:00').toLocaleDateString('pt-BR', { weekday: 'short', day: '2-digit' })}</span>
                       {isRegistradoFlow && (
@@ -2919,8 +2920,8 @@ function testeManual() {
                       <div className="flex flex-col"><label className="text-[10px] uppercase font-bold text-gray-400 dark:text-gray-500 mb-1">Entrada</label><input type="time" className="w-full p-3 border dark:border-gray-700 rounded-xl bg-white dark:bg-gray-800 text-black dark:text-white text-lg text-center font-bold outline-none focus:border-blue-500" value={r.realEntry} onChange={(e) => { const n = [...modalRecords]; n[idx].realEntry = e.target.value; setModalRecords(n); }} /></div>
                       {isRegistradoFlow && !r.isFolgaVendida && (
                         <>
-                          <div className="flex flex-col"><label className="text-[10px] uppercase font-bold text-gray-400 dark:text-gray-500 mb-1 text-center">P. Ent</label><input type="time" className="w-full p-3 border dark:border-gray-700 rounded-xl bg-white dark:bg-gray-800 text-gray-500 dark:text-gray-400 text-lg text-center outline-none focus:border-blue-500" value={r.punchEntry} onChange={(e) => { const n = [...modalRecords]; n[idx].punchEntry = e.target.value; setModalRecords(n); }} /></div>
-                          <div className="flex flex-col"><label className="text-[10px] uppercase font-bold text-gray-400 dark:text-gray-500 mb-1 text-center">P. Sai</label><input type="time" className="w-full p-3 border dark:border-gray-700 rounded-xl bg-white dark:bg-gray-800 text-gray-500 dark:text-gray-400 text-lg text-center outline-none focus:border-blue-500" value={r.punchExit} onChange={(e) => { const n = [...modalRecords]; n[idx].punchExit = e.target.value; setModalRecords(n); }} /></div>
+                          <div className="flex flex-col"><label className="text-[10px] uppercase font-bold text-gray-400 dark:text-gray-500 mb-1 text-center">Ponto: entrada</label><input type="time" className="w-full p-3 border dark:border-gray-700 rounded-xl bg-white dark:bg-gray-800 text-gray-500 dark:text-gray-400 text-lg text-center outline-none focus:border-blue-500" value={r.punchEntry} onChange={(e) => { const n = [...modalRecords]; n[idx].punchEntry = e.target.value; setModalRecords(n); }} /></div>
+                          <div className="flex flex-col"><label className="text-[10px] uppercase font-bold text-gray-400 dark:text-gray-500 mb-1 text-center">Ponto: saída</label><input type="time" className="w-full p-3 border dark:border-gray-700 rounded-xl bg-white dark:bg-gray-800 text-gray-500 dark:text-gray-400 text-lg text-center outline-none focus:border-blue-500" value={r.punchExit} onChange={(e) => { const n = [...modalRecords]; n[idx].punchExit = e.target.value; setModalRecords(n); }} /></div>
                         </>
                       )}
                       <div className="flex flex-col"><label className="text-[10px] uppercase font-bold text-gray-400 dark:text-gray-500 mb-1 text-right">Saída</label><input type="time" className="w-full p-3 border dark:border-gray-700 rounded-xl bg-white dark:bg-gray-800 text-black dark:text-white text-lg text-center font-bold outline-none focus:border-blue-500" value={r.realExit} onChange={(e) => { const n = [...modalRecords]; n[idx].realExit = e.target.value; setModalRecords(n); }} /></div>
@@ -2932,7 +2933,7 @@ function testeManual() {
                 {editingRequestId && <div className="mt-4"><label className="block text-sm font-semibold mb-2 dark:text-gray-200">Justificativa da Edição</label><textarea className="w-full p-4 border dark:border-gray-700 rounded-xl bg-white dark:bg-gray-800 text-black dark:text-white text-base focus:border-blue-500 outline-none" rows={3} value={editJustification} onChange={(e) => setEditJustification(e.target.value)} placeholder="Por que você está alterando este registro?" /></div>}
             </div>
 
-            <div className="mt-4 pt-4 border-t border-gray-100 dark:border-gray-700 flex gap-3 bg-white dark:bg-gray-800 sticky bottom-0 z-10 pb-6 md:pb-0">
+            <div className="entry-actions mt-4 pt-4 border-t border-gray-100 dark:border-gray-700 flex gap-3 bg-white dark:bg-gray-800 sticky bottom-0 z-10 pb-6 md:pb-0">
                 <button onClick={() => { setShowFormModal(false); setEditingRequestId(null); setEditingRequestSectorId(''); }} className="flex-1 py-4 bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 font-bold rounded-xl active:scale-95 transition">Cancelar</button>
                 <button onClick={submitRequest} className="flex-[2] py-4 bg-blue-600 text-white font-bold rounded-xl shadow-lg active:scale-95 transition">Salvar</button>
             </div>
