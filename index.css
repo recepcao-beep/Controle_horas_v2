@@ -1,0 +1,47 @@
+/* A restrained visual layer; keep the existing layouts and form behavior. */
+:root { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+body { margin: 0; -webkit-font-smoothing: antialiased; }
+.app-shell { background-color: #f4f7fb; }
+.app-shell h1, .app-shell h2 { letter-spacing: -0.035em; }
+.app-shell h3 { letter-spacing: -0.02em; }
+.app-shell .shadow-xl, .app-shell .shadow-2xl { box-shadow: 0 12px 36px -18px rgb(15 23 42 / 22%), 0 2px 6px rgb(15 23 42 / 3%); }
+.app-shell .shadow-lg { box-shadow: 0 5px 16px -8px rgb(15 23 42 / 24%); }
+.app-shell button { transition: background-color 160ms, border-color 160ms, box-shadow 160ms; }
+.app-shell button:focus-visible, .app-shell a:focus-visible {
+  outline: 3px solid #60a5fa;
+  outline-offset: 3px;
+}
+.app-shell input:not([type=checkbox]), .app-shell select, .app-shell textarea {
+  border-color: #cbd5e1;
+  transition: border-color 160ms, box-shadow 160ms;
+}
+.app-shell input:focus, .app-shell select:focus, .app-shell textarea:focus {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgb(37 99 235 / 12%);
+  outline: none;
+}
+.welcome-card { border-color: #e2e8f0; }
+.welcome-eyebrow { color: #2563eb; font-size: 11px; font-weight: 700; letter-spacing: .16em; margin-bottom: 12px; }
+.time-entry-panel .day-card { background-color: #f8fafc; border-color: #e2e8f0; box-shadow: none; }
+.time-entry-panel .day-card:focus-within { border-color: #93b4ef; }
+.time-entry-panel .day-card label { color: #475569; font-size: 11px; font-weight: 600; letter-spacing: .045em; }
+.time-entry-panel input[type=time] {
+  min-width: 0;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: .025em;
+  color-scheme: light;
+  -webkit-text-fill-color: #0f172a;
+}
+.time-entry-panel input[type=time]::-webkit-datetime-edit { color: #0f172a; }
+.time-entry-panel .entry-heading { padding-right: 32px; }
+.entry-subtitle { color: #64748b; font-size: 13px; line-height: 1.6; margin-top: 4px; }
+.time-entry-panel .entry-actions { padding-bottom: max(16px, env(safe-area-inset-bottom)); }
+.dark .app-shell { background-color: #0f172a; }
+.dark .welcome-card { border-color: #334155; }
+.dark .welcome-eyebrow { color: #93c5fd; }
+.dark .time-entry-panel .day-card { background-color: #111827; border-color: #334155; }
+.dark .time-entry-panel .day-card:focus-within { border-color: #60a5fa; }
+.dark .time-entry-panel .day-card label, .dark .entry-subtitle { color: #cbd5e1; }
+@media (prefers-reduced-motion: reduce) {
+  .app-shell *, .app-shell *::before, .app-shell *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; }
+}
